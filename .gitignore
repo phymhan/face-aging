@@ -2,9 +2,13 @@
 debug*
 datasets/
 checkpoints/
+pretrained_models/
 results/
 build/
 dist/
+*.pth
+*/*.pth
+*/*/*.pth
 *.png
 torch.egg-info/
 */**/__pycache__
@@ -41,3 +45,4 @@ test/.coverage
 test/data/legacy_serialized.pt
 *~
 .idea
+run_exp.sh

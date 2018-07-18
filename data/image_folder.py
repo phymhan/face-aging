@@ -10,6 +10,9 @@ import torch.utils.data as data
 from PIL import Image
 import os
 import os.path
+import itertools
+from util.util import parse_age_label
+
 
 IMG_EXTENSIONS = [
     '.jpg', '.JPG', '.jpeg', '.JPEG',
@@ -32,6 +35,30 @@ def make_dataset(dir):
                 images.append(path)
 
     return images
+
+
+def make_faceaging_dataset(dir, opt):
+    # opt.age_binranges: the (i+1)-th group is in the range [age_binranges[i], age_binranges[i+1])
+    # e.g.: [1, 11, 21, ..., 101], the 1-st group is [1, 10], the 9-th [91, 100], however, the 10-th [101, +inf)
+    paths = []
+    num_classes = len(opt.age_binranges)
+    # bins = itertools.chain(opt.age_binranges, [float('inf')])
+    bins = opt.age_binranges + [float('inf')]
+    ageList = [[] for _ in range(num_classes)]  # list of list, the outer list is indexed by age label
+    id = -1
+    for root, _, fnames in sorted(os.walk(dir)):
+        for fname in fnames:
+            # print(fname)
+            if is_image_file(fname):
+                id += 1
+                path = os.path.join(root, fname)
+                paths.append(path)
+                L = parse_age_label(fname, bins)
+                ageList[L].append(id)
+
+    maxLen = max([len(ls) for ls in ageList])
+
+    return paths, ageList, maxLen
 
 
 def default_loader(path):

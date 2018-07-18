@@ -27,6 +27,7 @@ class BaseModel():
         self.model_names = []
         self.visual_names = []
         self.image_paths = []
+        self.current_iter = 0
 
     def set_input(self, input):
         self.input = input

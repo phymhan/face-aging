@@ -103,6 +103,34 @@ def define_D(input_nc, ndf, which_model_netD,
     return init_net(netD, init_type, gpu_ids)
 
 
+def define_IP(which_model_netIP, input_nc, gpu_ids=[]):
+    netIP = None
+
+    if which_model_netIP == 'alexnet':
+        assert(input_nc == 3)
+        netIP = AlexNetFeatures(False)
+    else:
+        raise NotImplementedError('Identity-preserving model name [%s] is not recognized' % which_model_netIP)
+
+    if len(gpu_ids) > 0:
+        assert(torch.cuda.is_available())
+        netIP.to(gpu_ids[0])
+        netIP = torch.nn.DataParallel(netIP, gpu_ids)
+    return netIP  # do not init weights netIP here
+
+
+def define_AC(which_model_netAC, input_nc=3, num_classes=0, init_type='normal', gpu_ids=[]):
+    netAC = None
+
+    if which_model_netAC == 'alexnet':
+        assert(input_nc == 3)
+        netAC = AlexNet(num_classes)
+    else:
+        raise NotImplementedError('Auxiliary classifier name [%s] is not recognized' % which_model_netIP)
+
+    return init_net(netAC, init_type, gpu_ids)
+
+
 ##############################################################################
 # Classes
 ##############################################################################
@@ -380,3 +408,114 @@ class PixelDiscriminator(nn.Module):
 
     def forward(self, input):
         return self.net(input)
+
+
+class AlexNetFeatures(nn.Module):
+    def __init__(self, use_avg_pooling=False):
+        super(AlexNetFeatures, self).__init__()
+        sequence = [
+            nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(64, 192, kernel_size=5, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(192, 384, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(384, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+        ]
+        if use_avg_pooling:
+            sequence += [nn.AvgPool2d(kernel_size=6)]
+        self.features = nn.Sequential(*sequence)
+
+    def forward(self, x):
+        x = self.features(x)
+        return x
+
+    def init_weights(self, state_dict):
+        return None
+
+
+class AlexNet(nn.Module):
+    def __init__(self, num_classes=1000):
+        super(AlexNet, self).__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(64, 192, kernel_size=5, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(192, 384, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(384, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+        )
+        self.classifier = nn.Sequential(
+            nn.Dropout(),
+            nn.Linear(256 * 6 * 6, 4096),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(4096, 4096),
+            nn.ReLU(inplace=True),
+            nn.Linear(4096, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = x.view(x.size(0), 256 * 6 * 6)
+        x = self.classifier(x)
+        return x
+
+    def init_weights(self, state_dict):
+        return None
+
+
+class AlexNetLite(nn.Module):
+    def __init__(self, num_classes=10, use_avg_pooling=False):
+        super(AlexNetLite, self).__init__()
+        self.use_avg_pooling = use_avg_pooling
+        if use_avg_pooling:
+            fw = 1
+        else:
+            fw = 6
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(64, 192, kernel_size=5, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(192, 384, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(384, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+        )
+        self.fc = nn.Sequential(
+            nn.Dropout(),
+            nn.Linear(256 * fw * fw, 500),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(500, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        if self.use_avg_pooling:
+            x = nn.AvgPool2d(6)(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return x
+
+    def init_weights(self, state_dict):
+        return None

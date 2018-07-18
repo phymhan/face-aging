@@ -58,3 +58,13 @@ def mkdirs(paths):
 def mkdir(path):
     if not os.path.exists(path):
         os.makedirs(path)
+
+
+def parse_age_label(fname, binranges):
+    strlist = fname.split('_')
+    age = int(strlist[0])
+    l = None
+    for l in range(len(binranges)-1):
+        if (age >= binranges[l]) and (age < binranges[l+1]):
+            break
+    return l
