@@ -4,6 +4,7 @@ from .base_model import BaseModel
 from . import networks
 import random
 import numpy as np
+from collections import OrderedDict
 
 
 # TODO: set random seed
@@ -30,19 +31,24 @@ class FaceAgingModel(BaseModel):
             parser.add_argument('--which_model_netAC', type=str, default='alexnet', help='model type for AC loss')
             parser.add_argument('--IP_pretrained_model_path', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to IP net')
             parser.add_argument('--AC_pretrained_model_path', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to AC net')
+            parser.add_argument('--display_aging_visuals', action='store_true', help='display aging visuals if True')
+            parser.add_argument('--use_avg_pooling', action='store_true', help='use avg pooling in AlexNet if True')
 
         return parser
 
     def initialize(self, opt):
         BaseModel.initialize(self, opt)
         assert(opt.input_nc == opt.output_nc)
+
+        opt.gpu_ids = []
+        self.opt.gpu_ids = []
+
         self.opt.num_classes = len(opt.age_binranges)
         self.isTrain = opt.isTrain
         # specify the training losses you want to print out. The program will call base_model.get_current_losses
         self.loss_names = ['G_GAN', 'G_IP', 'G_L1', 'G_AC', 'D_real', 'D_fake', 'AC_real', 'AC_fake']
         # specify the images you want to save/display. The program will call base_model.get_current_visuals
         self.visual_names = ['real_A', 'fake_B', 'real_B']
-        # specify the models you want to save to the disk. The program will call base_model.save_networks and base_model.load_networks
         if self.isTrain:
             self.model_names = ['G', 'D', 'AC']
         else:  # during test time, only load Gs
@@ -57,14 +63,10 @@ class FaceAgingModel(BaseModel):
                                           opt.which_model_netD,
                                           opt.n_layers_D, opt.norm, use_sigmoid, opt.init_type, self.gpu_ids)
             self.netIP = networks.define_IP(opt.which_model_netIP, opt.input_nc, self.gpu_ids)
-            self.netIP.load_state_dict(torch.load(opt.IP_pretrained_model_path, map_location=str(self.device)), strict=False)
-            self.netAC = networks.define_AC(opt.which_model_netAC, opt.input_nc, opt.num_classes, opt.init_type, self.gpu_ids)
+            self.netIP.module.init_weights(opt.IP_pretrained_model_path)
+            self.netAC = networks.define_AC(opt.which_model_netAC, opt.input_nc, opt.num_classes, opt.init_type, opt.use_avg_pooling, self.gpu_ids)
             if not opt.continue_train and opt.AC_pretrained_model_path:
-                state_dict = torch.load(opt.AC_pretrained_model_path, map_location=str(self.device))
-                if opt.which_model_netAC == 'alexnet':
-                    del state_dict['classifier.6.weight']
-                    del state_dict['classifier.6.bias']
-                self.netAC.load_state_dict(state_dict, strict=False)
+                self.netAC.module.init_weights(opt.AC_pretrained_model_path)
 
         if self.isTrain:
             # TODO: use num_classes pools
@@ -138,6 +140,8 @@ class FaceAgingModel(BaseModel):
 
     def forward(self):
         self.fake_B = self.netG(torch.cat((self.real_A, self.batch_one_hot_labels[self.label_B][0:self.real_A.size(0),...]), 1))
+        if self.opt.display_aging_visuals:
+            self.aging_visuals = {L: self.netG(torch.cat((self.real_A, self.batch_one_hot_labels[L][0:self.real_A.size(0),...]), 1)) for L in range(self.opt.num_classes)}
 
     def backward_D(self):
         # Fake
@@ -210,3 +214,13 @@ class FaceAgingModel(BaseModel):
         self.optimizer_G.zero_grad()
         self.backward_G()
         self.optimizer_G.step()
+
+    def get_current_visuals(self):
+        visual_ret = OrderedDict()
+        for name in self.visual_names:
+            if isinstance(name, str):
+                visual_ret[name] = getattr(self, name)
+        if self.opt.display_aging_visuals:
+            for L in range(self.opt.num_classes):
+                visual_ret['aging_'+str(L)] = self.aging_visuals[L]
+        return visual_ret

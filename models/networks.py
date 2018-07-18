@@ -119,12 +119,15 @@ def define_IP(which_model_netIP, input_nc, gpu_ids=[]):
     return netIP  # do not init weights netIP here
 
 
-def define_AC(which_model_netAC, input_nc=3, num_classes=0, init_type='normal', gpu_ids=[]):
+def define_AC(which_model_netAC, input_nc=3, num_classes=0, init_type='normal', use_avg_pooling=False, gpu_ids=[]):
     netAC = None
 
     if which_model_netAC == 'alexnet':
         assert(input_nc == 3)
         netAC = AlexNet(num_classes)
+    elif which_model_netAC == 'alexnet_lite':
+        assert(input_nc == 3)
+        netAC = AlexNetLite(num_classes, use_avg_pooling)
     else:
         raise NotImplementedError('Auxiliary classifier name [%s] is not recognized' % which_model_netIP)
 
@@ -437,7 +440,9 @@ class AlexNetFeatures(nn.Module):
         return x
 
     def init_weights(self, state_dict):
-        return None
+        if isinstance(state_dict, str):
+            state_dict = torch.load(state_dict)
+        self.load_state_dict(state_dict, strict=False)
 
 
 class AlexNet(nn.Module):
@@ -475,7 +480,13 @@ class AlexNet(nn.Module):
         return x
 
     def init_weights(self, state_dict):
-        return None
+        if isinstance(state_dict, str):
+            state_dict = torch.load(state_dict)
+        if 'classifier.6.weight' in state_dict:
+            del state_dict['classifier.6.weight']
+        if 'classifier.6.bias' in state_dict:
+            del state_dict['classifier.6.bias']
+        self.load_state_dict(state_dict, strict=False)
 
 
 class AlexNetLite(nn.Module):
@@ -501,6 +512,7 @@ class AlexNetLite(nn.Module):
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2),
         )
+        # do not name 'fc' as 'classifier'
         self.fc = nn.Sequential(
             nn.Dropout(),
             nn.Linear(256 * fw * fw, 500),
@@ -518,4 +530,7 @@ class AlexNetLite(nn.Module):
         return x
 
     def init_weights(self, state_dict):
-        return None
+        if isinstance(state_dict, str):
+            state_dict = torch.load(state_dict)
+        # do not use self.features.load_state_dict() which will load nothing
+        self.load_state_dict(state_dict, strict=False)
