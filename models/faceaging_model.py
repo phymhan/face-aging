@@ -73,8 +73,7 @@ class FaceAgingModel(BaseModel):
 
         if self.isTrain:
             # TODO: use num_classes pools
-            assert(opt.pool_size == 0)
-            self.fake_B_pool = ImagePool(opt.pool_size)
+            self.fake_B_pool = [ImagePool(opt.pool_size) for _ in range(self.opt.num_classes)]
             # define loss functions
             self.criterionGAN = networks.GANLoss(use_lsgan=not opt.no_lsgan).to(self.device)
             self.criterionL1 = torch.nn.L1Loss()
@@ -172,7 +171,7 @@ class FaceAgingModel(BaseModel):
     def backward_D(self):
         # Fake image with label_B
         # stop backprop to the generator by detaching fake_B
-        fake_B = self.fake_B_pool.query(torch.cat((self.fake_B, self.batch_one_hot_labels[self.label_B][0:self.real_A.size(0),...]), 1))
+        fake_B = torch.cat((self.fake_B_pool[self.label_B].query(self.fake_B), self.batch_one_hot_labels[self.label_B][0:self.real_A.size(0),...]), 1)
         pred_fake = self.netD(fake_B.detach())
         self.loss_D_fake = self.criterionGAN(pred_fake, False)
 
@@ -194,13 +193,11 @@ class FaceAgingModel(BaseModel):
     def backward_AC(self):
         # Real
         pred = self.netAC(self.real_B_AC)
-        # pred = self.netAC(self.real_B)
         self.loss_AC_real = self.criterionAC(pred, self.batch_labels[self.label_B][0:self.real_A.size(0),...])
 
         # Fake
         if not self.opt.no_AC_on_fake:
             pred = self.netAC(self.fake_B_AC.detach())
-            # pred = self.netAC(self.fake_B.detach())
             self.loss_AC_fake = self.criterionAC(pred, self.batch_labels[self.label_B][0:self.real_A.size(0),...])
         else:
             self.loss_AC_fake = 0.0
@@ -220,14 +217,11 @@ class FaceAgingModel(BaseModel):
 
         # IP loss
         feature_A = self.netIP(self.real_A_IP).detach()
-        # feature_A = self.netIP(self.real_A).detach()
         feature_A.requires_grad = False
         self.loss_G_IP = torch.nn.MSELoss()(self.netIP(self.fake_B_IP), feature_A) * self.opt.lambda_IP
-        # self.loss_G_IP = torch.nn.MSELoss()(self.netIP(self.fake_B), feature_A) * self.opt.lambda_IP
 
         # AC loss
         pred_fake = self.netAC(self.fake_B_AC)
-        # pred_fake = self.netAC(self.fake_B)
         self.loss_G_AC = self.criterionAC(pred_fake, self.batch_labels[self.label_B][0:self.real_A.size(0),...]) * self.opt.lambda_AC
 
         self.loss_G = self.loss_G_GAN + self.loss_G_IP + self.loss_G_L1
