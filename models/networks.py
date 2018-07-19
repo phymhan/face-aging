@@ -116,7 +116,7 @@ def define_IP(which_model_netIP, input_nc, gpu_ids=[]):
         assert(torch.cuda.is_available())
         netIP.to(gpu_ids[0])
         netIP = torch.nn.DataParallel(netIP, gpu_ids)
-    return netIP  # do not init weights netIP here
+    return netIP  # do not init weights netIP here, weights will be reloaded anyways
 
 
 def define_AC(which_model_netAC, input_nc=3, num_classes=0, init_type='normal', use_avg_pooling=False, gpu_ids=[]):
@@ -429,7 +429,7 @@ class AlexNetFeatures(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(256, 256, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2),
+            # nn.MaxPool2d(kernel_size=3, stride=2),
         ]
         if use_avg_pooling:
             sequence += [nn.AvgPool2d(kernel_size=6)]
