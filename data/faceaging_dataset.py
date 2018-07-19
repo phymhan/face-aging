@@ -1,6 +1,7 @@
 import os.path
 from data.base_dataset import BaseDataset, get_transform
-from data.image_folder import make_dataset, make_faceaging_dataset
+from data.image_folder import make_dataset, make_dataset_with_filenames
+from util.util import parse_age_label
 from PIL import Image
 import random
 
@@ -19,10 +20,27 @@ class FaceAgingDataset(BaseDataset):
         self.age_bins = opt.age_binranges
         self.age_bins_with_inf = opt.age_binranges + [float('inf')]
         self.root = opt.dataroot
-        self.img_dir = os.path.join(opt.dataroot)
-        self.img_paths, self.ageList, self.size = make_faceaging_dataset(self.img_dir, self.opt)
+        if not opt.sourcefile_A:
+            self.dir = os.path.join(opt.dataroot, opt.phase)
+            self.paths, self.fnames = make_dataset_with_filenames(self.dir)
+        else:
+            self.dir = self.root
+            with open(opt.sourcefile_A, 'r') as f:
+                sourcefile = f.readlines()
+            self.paths = [os.path.join(self.dir, name.rstrip('\n').split()[0]) for name in sourcefile]
+            self.fnames = [name.rstrip('\n').split()[0] for name in sourcefile]
+        self.parse_paths()
         self.size = min(self.size, self.opt.max_dataset_size)
         self.transform = get_transform(opt)
+
+    def parse_paths(self):
+        ageList = [[] for _ in range(self.num_classes)]  # list of list, the outer list is indexed by age label
+        for (id, fname) in enumerate(self.fnames, 0):
+            L = parse_age_label(fname, self.age_bins_with_inf)
+            ageList[L].append(id)
+        maxLen = max([len(ls) for ls in ageList])
+        self.ageList = ageList
+        self.size = maxLen
 
     def __getitem__(self, index):
         imgs = {L: None for L in range(self.num_classes)}
@@ -30,7 +48,7 @@ class FaceAgingDataset(BaseDataset):
         for L in range(self.num_classes):
             idx = index % len(self.ageList[L])
             id = self.ageList[L][idx]
-            img = Image.open(self.img_paths[id]).convert('RGB')
+            img = Image.open(self.paths[id]).convert('RGB')
             img = self.transform(img)
             if self.opt.input_nc == 1:  # RGB to gray
                 tmp = img[0, ...] * 0.299 + img[1, ...] * 0.587 + img[2, ...] * 0.114

@@ -12,6 +12,8 @@ class BaseOptions():
 
     def initialize(self, parser):
         parser.add_argument('--dataroot', required=True, help='path to images (should have subfolders trainA, trainB, valA, valB, etc)')
+        parser.add_argument('--sourcefile_A', type=str, default='', help='path to source file A, only valid when dataset_mode==\'sourcefile\' or \'faceaging\'.')
+        parser.add_argument('--sourcefile_B', type=str, default='', help='path to source file B, only valid when dataset_mode==\'sourcefile\'.')
         parser.add_argument('--batchSize', type=int, default=1, help='input batch size')
         parser.add_argument('--loadSize', type=int, default=286, help='scale images to this size')
         parser.add_argument('--fineSize', type=int, default=256, help='then crop to this size')

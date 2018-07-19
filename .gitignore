@@ -6,6 +6,7 @@ pretrained_models/
 results/
 build/
 dist/
+*/*.txt
 *.pth
 */*.pth
 */*/*.pth
