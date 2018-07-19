@@ -43,8 +43,7 @@ class FaceAgingDataset(BaseDataset):
         self.size = maxLen
 
     def __getitem__(self, index):
-        imgs = {L: None for L in range(self.num_classes)}
-        # pths = {L: '' for L in range(self.num_classes)}
+        item_ret = {}
         for L in range(self.num_classes):
             idx = index % len(self.ageList[L])
             id = self.ageList[L][idx]
@@ -53,9 +52,9 @@ class FaceAgingDataset(BaseDataset):
             if self.opt.input_nc == 1:  # RGB to gray
                 tmp = img[0, ...] * 0.299 + img[1, ...] * 0.587 + img[2, ...] * 0.114
                 img = tmp.unsqueeze(0)
-            imgs[L] = img
-            # pths[L] = self.img_paths[id]
-        return imgs
+            item_ret[L] = img
+            item_ret['path_'+str(L)] = self.paths[id]
+        return item_ret
 
     def __len__(self):
         # shuffle ageList

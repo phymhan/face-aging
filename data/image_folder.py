@@ -38,8 +38,7 @@ def make_dataset(dir):
 
 
 def make_dataset_with_filenames(dir):
-    images = []
-    names = []
+    images, names = [], []
     assert os.path.isdir(dir), '%s is not a valid directory' % dir
 
     for root, _, fnames in sorted(os.walk(dir)):

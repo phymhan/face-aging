@@ -355,7 +355,6 @@ class NLayerDiscriminator(nn.Module):
             nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw),
             nn.LeakyReLU(0.2, True)
         ]
-
         nf_mult = 1
         nf_mult_prev = 1
         for n in range(1, n_layers):

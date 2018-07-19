@@ -69,7 +69,10 @@ class FaceAgingModel(BaseModel):
             self.netAC = networks.define_AC(opt.which_model_netAC, opt.input_nc, opt.num_classes, opt.init_type,
                                             opt.use_avg_pooling_AC, self.gpu_ids)
             if not opt.continue_train and opt.AC_pretrained_model_path:
-                self.netAC.module.init_weights(opt.AC_pretrained_model_path)
+                if isinstance(self.netAC, torch.nn.DataParallel):
+                    self.netAC.module.init_weights(opt.AC_pretrained_model_path)
+                else:
+                    self.netAC.init_weights(opt.AC_pretrained_model_path)
 
         if self.isTrain:
             # TODO: use num_classes pools
@@ -120,7 +123,7 @@ class FaceAgingModel(BaseModel):
     def pre_generate_labels(self):
         batch_labels = []
         for L in range(self.opt.num_classes):
-            tmp_labels = np.ones((self.opt.batchSize), dtype=np.int) * L
+            tmp_labels = np.zeros(self.opt.batchSize, dtype=np.int) + L
             batch_labels.append(torch.LongTensor(tmp_labels).to(self.device))
 
         self.batch_labels = batch_labels
@@ -152,7 +155,7 @@ class FaceAgingModel(BaseModel):
             self.real_B_AC = self.real_B
         else:
             self.real_B_AC = torch.nn.Upsample(size=(self.opt.fineSize_AC, self.opt.fineSize_AC), mode='bilinear', align_corners=True)(self.real_B)
-        self.image_paths = ''  # TODO: add image paths
+        self.image_paths = input['path_'+str(self.label_B)]
         self.current_iter += 1
 
     def forward(self):
@@ -213,7 +216,10 @@ class FaceAgingModel(BaseModel):
         self.loss_G_GAN = self.criterionGAN(pred_fake, True)
 
         # L1: fake_B ~= real_A
-        self.loss_G_L1 = self.criterionL1(self.fake_B, self.real_A) * self.opt.lambda_L1
+        if self.opt.lambda_L1 > 0.0:
+            self.loss_G_L1 = self.criterionL1(self.fake_B, self.real_A) * self.opt.lambda_L1
+        else:
+            self.loss_G_L1 = 0.0
 
         # IP loss
         feature_A = self.netIP(self.real_A_IP).detach()
