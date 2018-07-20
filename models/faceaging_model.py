@@ -23,7 +23,8 @@ class FaceAgingModel(BaseModel):
         parser.set_defaults(dataset_mode='aligned')
         parser.set_defaults(which_model_netG='unet_256')
         parser.add_argument('--embedding_nc', type=int, default=10, help='# of embedding channels')
-        parser.add_argument('--use_avg_pooling_AC', action='store_true', help='use avg pooling in AlexNet if True')
+        parser.add_argument('--pooling_AC', type=str, default='avg', help='which pooling layer in AC')
+        parser.add_argument('--dropout', type=float, default=0.5, help='p in dropout layer')
         if is_train:
             parser.add_argument('--lambda_L1', type=float, default=0.001, help='weight for L1 loss')
             parser.add_argument('--lambda_IP', type=float, default=0.1, help='weight for identity preserving loss')
@@ -67,7 +68,7 @@ class FaceAgingModel(BaseModel):
             self.netIP = networks.define_IP(opt.which_model_netIP, opt.input_nc, self.gpu_ids)
             self.netIP.module.init_weights(opt.IP_pretrained_model_path)
             self.netAC = networks.define_AC(opt.which_model_netAC, opt.input_nc, opt.num_classes, opt.init_type,
-                                            opt.use_avg_pooling_AC, self.gpu_ids)
+                                            opt.pooling_AC, self.opt.dropout, self.gpu_ids)
             if not opt.continue_train and opt.AC_pretrained_model_path:
                 if isinstance(self.netAC, torch.nn.DataParallel):
                     self.netAC.module.init_weights(opt.AC_pretrained_model_path)
@@ -129,12 +130,13 @@ class FaceAgingModel(BaseModel):
         self.batch_labels = batch_labels
 
     def sample_labels(self):
+        # returns label_A, label_B, label_B_not
         if not self.opt.train_label_pairs:
             idx = self.current_iter % len(self.opt.train_label_pairs)
             labels_AnB = self.opt.train_label_pairs[idx].rstrip('\n').split()
         else:
             labels_AnB = random.sample(range(self.opt.num_classes), 2)
-        return int(labels_AnB[0]), int(labels_AnB[1])
+        return int(labels_AnB[0]), int(labels_AnB[1]), random.sample(set(range(self.opt.num_classes))-set([int(labels_AnB[1])]), 1)[0]
 
     def get_fineSize(self, which_model='alexnet'):
         size = None
@@ -144,7 +146,8 @@ class FaceAgingModel(BaseModel):
         return size
 
     def set_input(self, input):
-        self.label_A, self.label_B = self.sample_labels()
+        self.label_A, self.label_B, self.label_B_not = self.sample_labels()
+        # print(self.label_A, self.label_B, self.label_B_not)
         self.real_A = input[self.label_A].to(self.device)
         self.real_B = input[self.label_B].to(self.device)
         if self.opt.fineSize_IP == self.opt.fineSize:
@@ -183,8 +186,8 @@ class FaceAgingModel(BaseModel):
         pred_real = self.netD(real_B_right)
         self.loss_D_real_right = self.criterionGAN(pred_real, True)
 
-        # Real image with label_A
-        real_B_wrong = torch.cat((self.real_B, self.batch_one_hot_labels[self.label_A][0:self.real_A.size(0), ...]), 1)
+        # Real image with label_B_not
+        real_B_wrong = torch.cat((self.real_B, self.batch_one_hot_labels[self.label_B_not][0:self.real_A.size(0), ...]), 1)
         pred_real = self.netD(real_B_wrong)
         self.loss_D_real_wrong = self.criterionGAN(pred_real, False)
 

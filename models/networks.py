@@ -119,15 +119,15 @@ def define_IP(which_model_netIP, input_nc, gpu_ids=[]):
     return netIP  # do not init weights netIP here, weights will be reloaded anyways
 
 
-def define_AC(which_model_netAC, input_nc=3, num_classes=0, init_type='normal', use_avg_pooling=False, gpu_ids=[]):
+def define_AC(which_model_netAC, input_nc=3, num_classes=0, init_type='normal', pooling='avg', dropout=0.5, gpu_ids=[]):
     netAC = None
 
     if which_model_netAC == 'alexnet':
         assert(input_nc == 3)
-        netAC = AlexNet(num_classes)
+        netAC = AlexNet(num_classes, dropout)
     elif which_model_netAC == 'alexnet_lite':
         assert(input_nc == 3)
-        netAC = AlexNetLite(num_classes, use_avg_pooling)
+        netAC = AlexNetLite(num_classes, pooling, dropout)
     else:
         raise NotImplementedError('Auxiliary classifier name [%s] is not recognized' % which_model_netIP)
 
@@ -445,7 +445,7 @@ class AlexNetFeatures(nn.Module):
 
 
 class AlexNet(nn.Module):
-    def __init__(self, num_classes=1000):
+    def __init__(self, num_classes=1000, dropout=0.5):
         super(AlexNet, self).__init__()
         self.features = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
@@ -463,10 +463,10 @@ class AlexNet(nn.Module):
             nn.MaxPool2d(kernel_size=3, stride=2),
         )
         self.classifier = nn.Sequential(
-            nn.Dropout(),
+            nn.Dropout(dropout),
             nn.Linear(256 * 6 * 6, 4096),
             nn.ReLU(inplace=True),
-            nn.Dropout(),
+            nn.Dropout(dropout),
             nn.Linear(4096, 4096),
             nn.ReLU(inplace=True),
             nn.Linear(4096, num_classes),
@@ -489,10 +489,10 @@ class AlexNet(nn.Module):
 
 
 class AlexNetLite(nn.Module):
-    def __init__(self, num_classes=10, use_avg_pooling=False):
+    def __init__(self, num_classes=10, pooling='avg', dropout=0.5):
         super(AlexNetLite, self).__init__()
-        self.use_avg_pooling = use_avg_pooling
-        if use_avg_pooling:
+        self.pooling = pooling
+        if pooling:
             fw = 1
         else:
             fw = 6
@@ -511,19 +511,20 @@ class AlexNetLite(nn.Module):
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2),
         )
-        # do not name 'fc' as 'classifier'
         self.fc = nn.Sequential(
-            nn.Dropout(),
-            nn.Linear(256 * fw * fw, 500),
+            nn.Dropout(dropout),
+            nn.Linear(256 * fw * fw, 64),
             nn.ReLU(inplace=True),
-            nn.Dropout(),
-            nn.Linear(500, num_classes),
+            nn.Dropout(dropout),
+            nn.Linear(64, num_classes),
         )
 
     def forward(self, x):
         x = self.features(x)
-        if self.use_avg_pooling:
+        if self.pooling == 'avg':
             x = nn.AvgPool2d(6)(x)
+        elif self.pooling == 'max':
+            x = nn.MaxPool2d(6)(x)
         x = x.view(x.size(0), -1)
         x = self.fc(x)
         return x
@@ -533,3 +534,34 @@ class AlexNetLite(nn.Module):
             state_dict = torch.load(state_dict)
         # do not use self.features.load_state_dict() which will load nothing
         self.load_state_dict(state_dict, strict=False)
+
+
+class ResNet(nn.Module):
+    def __init__(self, num_classes, which_model):
+        super(ResNet, self).__init__()
+        model = None
+        if which_model == 'resnet18':
+            from torchvision.models import resnet18
+            model = resnet18(False)
+            model.fc = nn.Linear(512 * 1, num_classes)
+        elif which_model == 'resnet34':
+            from torchvision.models import resnet34
+            model = resnet34(False)
+            model.fc = nn.Linear(512 * 1, num_classes)
+        elif which_model == 'resnet50':
+            from torchvision.models import resnet50
+            model = resnet50(False)
+            model.fc = nn.Linear(512 * 4, num_classes)
+        self.model = model
+
+    def forward(self, x):
+        return self.model(x)
+
+    def init_weights(self, state_dict):
+        if isinstance(state_dict, str):
+            state_dict = torch.load(state_dict)
+            if 'fc.weight' in state_dict:
+                del state_dict['fc.weight']
+            if 'fc.bias' in state_dict:
+                del state_dict['fc.bias']
+        self.model.load_state_dict(state_dict, strict=False)
