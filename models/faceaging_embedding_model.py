@@ -8,9 +8,9 @@ from collections import OrderedDict
 
 
 # TODO: set random seed
-class FaceAgingModel(BaseModel):
+class FaceAgingEmbeddingModel(BaseModel):
     def name(self):
-        return 'FaceAgingModel'
+        return 'FaceAgingEmbeddingModel'
 
     @staticmethod
     def modify_commandline_options(parser, is_train=True):
@@ -53,7 +53,7 @@ class FaceAgingModel(BaseModel):
         # specify the images you want to save/display. The program will call base_model.get_current_visuals
         self.visual_names = ['real_A', 'fake_B', 'real_B']
         if self.isTrain:
-            self.model_names = ['G', 'D', 'AC']
+            self.model_names = ['G', 'D', 'AC', 'E']
         else:  # during test time, only load Gs
             self.model_names = ['G']
         # load/define networks
@@ -77,6 +77,10 @@ class FaceAgingModel(BaseModel):
                     self.netAC.module.init_weights(opt.pretrained_model_path_AC)
                 else:
                     self.netAC.init_weights(opt.pretrained_model_path_AC)
+            # define netE
+            self.netE = networks.define_E(opt.which_model_netE, opt.input_nc, opt.init_type, opt.pooling, self.gpu_ids)
+            if not opt.continue_train and opt.pretrained_model_path_E:
+                self.netE.load_state_dict(torch.load(opt.pretrained_model_path_E))
 
         if self.isTrain:
             # TODO: use num_classes pools

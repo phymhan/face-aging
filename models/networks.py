@@ -108,7 +108,7 @@ def define_IP(which_model_netIP, input_nc, gpu_ids=[]):
 
     if which_model_netIP == 'alexnet':
         assert(input_nc == 3)
-        netIP = AlexNetFeatures(False)
+        netIP = AlexNetFeatures('None')
     else:
         raise NotImplementedError('Identity-preserving model name [%s] is not recognized' % which_model_netIP)
 
@@ -132,6 +132,23 @@ def define_AC(which_model_netAC, input_nc=3, num_classes=0, init_type='normal', 
         raise NotImplementedError('Auxiliary classifier name [%s] is not recognized' % which_model_netIP)
 
     return init_net(netAC, init_type, gpu_ids)
+
+
+def define_E(which_model_netE, input_nc=3, init_type='kaiming', pooling='None', dropout=0.5, fc_dim=64, gpu_ids=[]):
+    # Encoder is a Siamese Network
+    netE = None
+
+    if which_model_netE == 'alexnet':
+        base = AlexNetFeatures(pooling='None')
+    elif 'resnet' in opt.which_model:
+        base = ResNetFeatures(which_model_netE)
+    else:
+        raise NotImplementedError('Model [%s] is not implemented.' % opt.which_model)
+
+    # define Siamese Network
+    netE = SiameseNetwork(3, base, pooling, dropout, fc_dim)
+
+    return init_net(netE, init_type, gpu_ids)
 
 
 ##############################################################################
@@ -412,36 +429,50 @@ class PixelDiscriminator(nn.Module):
         return self.net(input)
 
 
-class AlexNetFeatures(nn.Module):
-    def __init__(self, use_avg_pooling=False):
-        super(AlexNetFeatures, self).__init__()
-        sequence = [
-            nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
+class SiameseNetwork(nn.Module):
+    def __init__(self, num_classes=3, base=None, pooling='avg', dropout=0.5, fc_dim=64):
+        super(SiameseNetwork, self).__init__()
+        self.pooling = pooling
+        if pooling:
+            fw = 1
+        else:
+            fw = 6
+        self.base = base
+        self.fc = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(base.feature_dim * fw * fw * 2, fc_dim),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2),
-            nn.Conv2d(64, 192, kernel_size=5, padding=2),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2),
-            nn.Conv2d(192, 384, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(384, 256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            # nn.MaxPool2d(kernel_size=3, stride=2),
-        ]
-        if use_avg_pooling:
-            sequence += [nn.AvgPool2d(kernel_size=6)]
-        self.features = nn.Sequential(*sequence)
+            nn.Dropout(dropout),
+            nn.Linear(fc_dim, num_classes),
+        )
 
-    def forward(self, x):
-        x = self.features(x)
-        return x
+    def forward_once(self, x):
+        output = self.base.forward(x)
+        if self.pooling == 'avg':
+            output = nn.AvgPool2d(output.size(2))(output)
+        elif self.pooling == 'max':
+            output = nn.MaxPool2d(output.size(2))(output)
+        output = output.view(output.size(0), -1)
+        return output
+
+    def forward(self, input1, input2):
+        output1 = self.forward_once(input1)
+        output2 = self.forward_once(input2)
+        output = torch.cat((output1, output2), dim=1)
+        output = self.fc(output)
+        return output
+
+    def get_feature(self, x):
+        output = self.base.forward(x)
+        if self.pooling == 'avg':
+            output = nn.AvgPool2d(output.size(2))(output)
+        elif self.pooling == 'max':
+            output = nn.MaxPool2d(output.size(2))(output)
+        return output
 
     def init_weights(self, state_dict):
-        if isinstance(state_dict, str):
-            state_dict = torch.load(state_dict)
-        self.load_state_dict(state_dict, strict=False)
+        # only base needs pretrained weights
+        self.base.init_weights(state_dict)
 
 
 class AlexNet(nn.Module):
@@ -536,6 +567,41 @@ class AlexNetLite(nn.Module):
         self.load_state_dict(state_dict, strict=False)
 
 
+class AlexNetFeatures(nn.Module):
+    def __init__(self, pooling='avg'):
+        super(AlexNetFeatures, self).__init__()
+        sequence = [
+            nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(64, 192, kernel_size=5, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(192, 384, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(384, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+        ]
+        if pooling == 'avg':
+            sequence += [nn.AvgPool2d(kernel_size=6)]
+        elif pooling == 'max':
+            sequence += [nn.MaxPool2d(kernel_size=6)]
+        self.features = nn.Sequential(*sequence)
+        self.feature_dim = 256
+
+    def forward(self, x):
+        x = self.features(x)
+        return x
+
+    def init_weights(self, state_dict):
+        if isinstance(state_dict, str):
+            state_dict = torch.load(state_dict)
+        self.load_state_dict(state_dict, strict=False)
+
+
 class ResNet(nn.Module):
     def __init__(self, num_classes, which_model):
         super(ResNet, self).__init__()
@@ -552,10 +618,65 @@ class ResNet(nn.Module):
             from torchvision.models import resnet50
             model = resnet50(False)
             model.fc = nn.Linear(512 * 4, num_classes)
+        elif which_model == 'resnet101':
+            from torchvision.models import resnet101
+            model = resnet101(False)
+            model.fc = nn.Linear(512 * 4, num_classes)
+        elif which_model == 'resnet152':
+            from torchvision.models import resnet152
+            model = resnet152(False)
+            model.fc = nn.Linear(512 * 4, num_classes)
         self.model = model
 
     def forward(self, x):
         return self.model(x)
+
+    def init_weights(self, state_dict):
+        if isinstance(state_dict, str):
+            state_dict = torch.load(state_dict)
+            if 'fc.weight' in state_dict:
+                del state_dict['fc.weight']
+            if 'fc.bias' in state_dict:
+                del state_dict['fc.bias']
+        self.model.load_state_dict(state_dict, strict=False)
+
+
+class ResNetFeatures(nn.Module):
+    def __init__(self, which_model):
+        super(ResNetFeatures, self).__init__()
+        model = None
+        feature_dim = None
+        if which_model == 'resnet18':
+            from torchvision.models import resnet18
+            model = resnet18(False)
+            feature_dim = 512 * 1
+        elif which_model == 'resnet34':
+            from torchvision.models import resnet34
+            model = resnet34(False)
+            feature_dim = 512 * 1
+        elif which_model == 'resnet50':
+            from torchvision.models import resnet50
+            model = resnet50(False)
+            feature_dim = 512 * 4
+        elif which_model == 'resnet101':
+            from torchvision.models import resnet101
+            model = resnet101(False)
+            feature_dim = 512 * 4
+        self.model = model
+        self.feature_dim = feature_dim
+
+    def forward(self, x):
+        x = self.model.conv1(x)
+        x = self.model.bn1(x)
+        x = self.model.relu(x)
+        x = self.model.maxpool(x)
+
+        x = self.model.layer1(x)
+        x = self.model.layer2(x)
+        x = self.model.layer3(x)
+        x = self.model.layer4(x)
+
+        return x
 
     def init_weights(self, state_dict):
         if isinstance(state_dict, str):
