@@ -69,8 +69,8 @@ class FaceAgingEmbeddingModel(BaseModel):
             # define netIP, which is not saved
             self.netIP = networks.define_IP(opt.which_model_netIP, opt.input_nc, self.gpu_ids)
             self.netIP.module.init_weights(opt.pretrained_model_path_IP)
-            # define netAC
-            self.netAC = networks.define_AC(opt.which_model_netAC, opt.input_nc, opt.num_classes, opt.init_type,
+            # define netAC, which is a Siamese network
+            self.netAC = networks.define_S(opt.which_model_netAC, opt.input_nc, opt.num_classes, opt.init_type,
                                             opt.pooling_AC, self.opt.dropout, self.gpu_ids)
             if not opt.continue_train and opt.pretrained_model_path_AC:
                 if isinstance(self.netAC, torch.nn.DataParallel):
@@ -80,10 +80,11 @@ class FaceAgingEmbeddingModel(BaseModel):
             # define netE
             self.netE = networks.define_E(opt.which_model_netE, opt.input_nc, opt.init_type, opt.pooling, self.gpu_ids)
             if not opt.continue_train and opt.pretrained_model_path_E:
-                self.netE.load_state_dict(torch.load(opt.pretrained_model_path_E))
+                self.netE.load_state_dict(opt.pretrained_model_path_E)
 
         if self.isTrain:
             # TODO: use num_classes pools
+            assert(opt.pool_size == 0)
             self.fake_B_pool = [ImagePool(opt.pool_size) for _ in range(self.opt.num_classes)]
             # define loss functions
             self.criterionGAN = networks.GANLoss(use_lsgan=not opt.no_lsgan).to(self.device)
@@ -100,7 +101,7 @@ class FaceAgingEmbeddingModel(BaseModel):
             self.optimizers.append(self.optimizer_AC)
 
         if self.isTrain:
-            if not self.opt.train_label_pairs:
+            if not self.opt.train_label_pairs and isinstance(self.opt.train_label_pairs, str):
                 with open(self.opt.train_label_pairs, 'r') as f:
                     self.opt.train_label_pairs = f.readlines()
 
@@ -136,15 +137,6 @@ class FaceAgingEmbeddingModel(BaseModel):
 
         self.batch_labels = batch_labels
 
-    def sample_labels(self):
-        # returns label_A, label_B, label_B_not
-        if not self.opt.train_label_pairs:
-            idx = self.current_iter % len(self.opt.train_label_pairs)
-            labels_AnB = self.opt.train_label_pairs[idx].rstrip('\n').split()
-        else:
-            labels_AnB = random.sample(range(self.opt.num_classes), 2)
-        return int(labels_AnB[0]), int(labels_AnB[1]), random.sample(set(range(self.opt.num_classes))-set([int(labels_AnB[1])]), 1)[0]
-
     def get_fineSize(self, which_model='alexnet'):
         size = None
         if 'alexnet' in which_model:
@@ -153,10 +145,10 @@ class FaceAgingEmbeddingModel(BaseModel):
         return size
 
     def set_input(self, input):
-        self.label_A, self.label_B, self.label_B_not = self.sample_labels()
         # print(self.label_A, self.label_B, self.label_B_not)
-        self.real_A = input[self.label_A].to(self.device)
-        self.real_B = input[self.label_B].to(self.device)
+        self.real_A = input['A'].to(self.device)
+        self.real_B = input['B'].to(self.device)
+        self.label_AC = input['label']  # label for AC, which is the relation between real_A and real_B
         if self.opt.fineSize_IP == self.opt.fineSize:
             self.real_A_IP = self.real_A
         else:
@@ -165,11 +157,13 @@ class FaceAgingEmbeddingModel(BaseModel):
             self.real_B_AC = self.real_B
         else:
             self.real_B_AC = torch.nn.Upsample(size=(self.opt.fineSize_AC, self.opt.fineSize_AC), mode='bilinear', align_corners=True)(self.real_B)
-        self.image_paths = input['path_'+str(self.label_B)]
+        self.image_paths = input['B_paths']
         self.current_iter += 1
 
     def forward(self):
-        self.fake_B = self.netG(torch.cat((self.real_A, self.batch_one_hot_labels[self.label_B][0:self.real_A.size(0),...]), 1))
+        self.embedding_A = self.netE(self.real_A)
+        self.embedding_B = self.netE(self.real_B)
+        self.fake_B = self.netG(torch.cat((self.real_A, self.embedding_B), 1))
         if self.opt.fineSize_IP == self.opt.fineSize:
             self.fake_B_IP = self.fake_B
         else:
@@ -178,25 +172,30 @@ class FaceAgingEmbeddingModel(BaseModel):
             self.fake_B_AC = self.fake_B
         else:
             self.fake_B_AC = torch.nn.Upsample(size=(self.opt.fineSize_AC, self.opt.fineSize_AC), mode='bilinear', align_corners=True)(self.fake_B)
+        # TODO: display_aging_visuals
         if self.opt.display_aging_visuals:
             self.aging_visuals = {L: self.netG(torch.cat((self.real_A, self.batch_one_hot_labels[L][0:self.real_A.size(0),...]), 1)) for L in range(self.opt.num_classes)}
 
     def backward_D(self):
         # Fake image with label_B
         # stop backprop to the generator by detaching fake_B
-        fake_B = torch.cat((self.fake_B_pool[self.label_B].query(self.fake_B), self.batch_one_hot_labels[self.label_B][0:self.real_A.size(0),...]), 1)
+        # TODO: query from pool
+        fake_B = self.fake_B
         pred_fake = self.netD(fake_B.detach())
         self.loss_D_fake = self.criterionGAN(pred_fake, False)
 
-        # Real image with label_B
-        real_B_right = torch.cat((self.real_B, self.batch_one_hot_labels[self.label_B][0:self.real_A.size(0),...]), 1)
-        pred_real = self.netD(real_B_right)
+        # Real_B image with embedding_B
+        real_B_embedding_B = torch.cat((self.real_B, self.embedding_B), 1)
+        pred_real = self.netD(real_B_embedding_B)
         self.loss_D_real_right = self.criterionGAN(pred_real, True)
 
-        # Real image with label_B_not
-        real_B_wrong = torch.cat((self.real_B, self.batch_one_hot_labels[self.label_B_not][0:self.real_A.size(0), ...]), 1)
-        pred_real = self.netD(real_B_wrong)
-        self.loss_D_real_wrong = self.criterionGAN(pred_real, False)
+        # Real_B image with embedding_A
+        real_B_embedding_A = torch.cat((self.real_B, self.embedding_A), 1)
+        pred_real = self.netD(real_B_embedding_A)
+        if self.label_AC == 1:
+            self.loss_D_real_wrong = self.criterionGAN(pred_real, True)
+        else:
+            self.loss_D_real_wrong = self.criterionGAN(pred_real, False)
 
         # Combined loss
         self.loss_D = (self.loss_D_fake + (self.loss_D_real_right + self.loss_D_real_wrong) * 0.5) * 0.5
@@ -205,15 +204,11 @@ class FaceAgingEmbeddingModel(BaseModel):
 
     def backward_AC(self):
         # Real
-        pred = self.netAC(self.real_B_AC)
-        self.loss_AC_real = self.criterionAC(pred, self.batch_labels[self.label_B][0:self.real_A.size(0),...])
+        pred = self.netAC(self.real_A, self.real_B)
+        self.loss_AC_real = self.criterionAC(pred, torch.LongTensor(self.label_AC).to(self.device))
 
-        # Fake
-        if not self.opt.no_AC_on_fake:
-            pred = self.netAC(self.fake_B_AC.detach())
-            self.loss_AC_fake = self.criterionAC(pred, self.batch_labels[self.label_B][0:self.real_A.size(0),...])
-        else:
-            self.loss_AC_fake = 0.0
+        # TODO: Fake?
+        self.loss_AC_fake = 0.0
 
         self.loss_AC = (self.loss_AC_fake + self.loss_AC_real) * 0.5
 
@@ -221,7 +216,8 @@ class FaceAgingEmbeddingModel(BaseModel):
 
     def backward_G(self):
         # First, G(A) should fake the discriminator
-        fake_B = torch.cat((self.fake_B, self.batch_one_hot_labels[self.label_B][0:self.real_A.size(0),...]), 1)
+        # FIXME: detach embedding_B?
+        fake_B = torch.cat((self.fake_B, self.embedding_B), 1)
         pred_fake = self.netD(fake_B)
         self.loss_G_GAN = self.criterionGAN(pred_fake, True)
 
@@ -237,8 +233,8 @@ class FaceAgingEmbeddingModel(BaseModel):
         self.loss_G_IP = torch.nn.MSELoss()(self.netIP(self.fake_B_IP), feature_A) * self.opt.lambda_IP
 
         # AC loss
-        pred_fake = self.netAC(self.fake_B_AC)
-        self.loss_G_AC = self.criterionAC(pred_fake, self.batch_labels[self.label_B][0:self.real_A.size(0),...]) * self.opt.lambda_AC
+        pred_fake = self.netAC(self.real_A, self.fake_B)
+        self.loss_G_AC = self.criterionAC(pred_fake, torch.LongTensor(self.label_AC).to(self.device)) * self.opt.lambda_AC
 
         self.loss_G = self.loss_G_GAN + self.loss_G_IP + self.loss_G_L1
 
@@ -269,6 +265,7 @@ class FaceAgingEmbeddingModel(BaseModel):
         for name in self.visual_names:
             if isinstance(name, str):
                 visual_ret[name] = getattr(self, name)
+        # TODO: display_aging_visuals
         if self.opt.display_aging_visuals:
             for L in range(self.opt.num_classes):
                 visual_ret['age_'+str(L)] = self.aging_visuals[L]
