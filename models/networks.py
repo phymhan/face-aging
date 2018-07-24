@@ -140,7 +140,7 @@ def define_E(which_model_netE, input_nc=3, init_type='kaiming', pooling='None', 
 
     if which_model_netE == 'alexnet':
         base = AlexNetFeatures(pooling='None')
-    elif 'resnet' in opt.which_model:
+    elif 'resnet' in which_model_netE:
         base = ResNetFeatures(which_model_netE)
     else:
         raise NotImplementedError('Model [%s] is not implemented.' % opt.which_model)
@@ -150,6 +150,23 @@ def define_E(which_model_netE, input_nc=3, init_type='kaiming', pooling='None', 
 
     return init_net(netE, init_type, gpu_ids)
 
+
+def define_S(which_model_netS, input_nc=3, init_type='kaiming', pooling='None', dropout=0.5, fc_dim=64, gpu_ids=[]):
+    # AC for faceaging_embedding model is a Siamese Network
+    netS = None
+
+    if which_model_netS == 'alexnet':
+        base = AlexNetFeatures(pooling='None')
+    elif 'resnet' in which_model_netS:
+        base = ResNetFeatures(which_model_netS)
+    else:
+        raise NotImplementedError('Model [%s] is not implemented.' % opt.which_model)
+
+    # define Siamese Network
+    netS = SiameseNetwork(3, base, pooling, dropout, fc_dim)
+
+    return init_net(netS, init_type, gpu_ids)
+#
 
 ##############################################################################
 # Classes

@@ -23,7 +23,8 @@ class FaceAgingEmbeddingModel(BaseModel):
         parser.set_defaults(dataset_mode='aligned')
         parser.set_defaults(which_model_netG='unet_256')
         parser.add_argument('--embedding_nc', type=int, default=10, help='# of embedding channels')
-        parser.add_argument('--pooling_AC', type=str, default='avg', help='which pooling layer in AC')
+        parser.add_argument('--which_model_netE', type=str, default='alexnet', help='model type for E')
+        parser.add_argument('--pooling_E', type=str, default='avg', help='which pooling layer in E')
         parser.add_argument('--dropout', type=float, default=0.5, help='p in dropout layer')
         if is_train:
             parser.add_argument('--lambda_L1', type=float, default=0.001, help='weight for L1 loss')
@@ -31,12 +32,16 @@ class FaceAgingEmbeddingModel(BaseModel):
             parser.add_argument('--lambda_AC', type=float, default=1, help='weight for auxiliary classifier')
             parser.add_argument('--which_model_netIP', type=str, default='alexnet', help='model type for IP loss')
             parser.add_argument('--which_model_netAC', type=str, default='alexnet', help='model type for AC loss')
+            parser.add_argument('--pooling_AC', type=str, default='avg', help='which pooling layer in AC')
             parser.add_argument('--fineSize_IP', type=int, default=224, help='fineSize for IP')
             parser.add_argument('--fineSize_AC', type=int, default=224, help='fineSize for AC')
             parser.add_argument('--pretrained_model_path_IP', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to IP net')
             parser.add_argument('--pretrained_model_path_AC', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to AC net')
+            parser.add_argument('--pretrained_model_path_E', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to E net')
             parser.add_argument('--display_aging_visuals', action='store_true', help='display aging visuals if True')
+            parser.add_argument('--aging_visual_embedding_path', type=str, default='pretrained_models/features.npy', help='pregenerated age embeddings')
             parser.add_argument('--lr_AC', type=float, default=0.0002, help='learning rate for AC')
+            parser.add_argument('--lr_E', type=float, default=0.0002, help='learning rate for E')
             parser.add_argument('--no_AC_on_fake', action='store_true', help='do *not* train AC on fake images')
 
         return parser
@@ -70,17 +75,20 @@ class FaceAgingEmbeddingModel(BaseModel):
             self.netIP = networks.define_IP(opt.which_model_netIP, opt.input_nc, self.gpu_ids)
             self.netIP.module.init_weights(opt.pretrained_model_path_IP)
             # define netAC, which is a Siamese network
-            self.netAC = networks.define_S(opt.which_model_netAC, opt.input_nc, opt.num_classes, opt.init_type,
-                                            opt.pooling_AC, self.opt.dropout, self.gpu_ids)
+            # TODO: dropout and fc_dim opt for AC and E
+            self.netAC = networks.define_S(opt.which_model_netAC, opt.input_nc, opt.init_type, opt.pooling_AC, 0.5, 64, self.gpu_ids)
             if not opt.continue_train and opt.pretrained_model_path_AC:
                 if isinstance(self.netAC, torch.nn.DataParallel):
                     self.netAC.module.init_weights(opt.pretrained_model_path_AC)
                 else:
                     self.netAC.init_weights(opt.pretrained_model_path_AC)
             # define netE
-            self.netE = networks.define_E(opt.which_model_netE, opt.input_nc, opt.init_type, opt.pooling, self.gpu_ids)
+            self.netE = networks.define_E(opt.which_model_netE, opt.input_nc, opt.init_type, opt.pooling_E, 0.5, 64, self.gpu_ids)
             if not opt.continue_train and opt.pretrained_model_path_E:
-                self.netE.load_state_dict(opt.pretrained_model_path_E)
+                if isinstance(self.netE, torch.nn.DataParallel):
+                    self.netE.module.init_weights(opt.pretrained_model_path_E)
+                else:
+                    self.netE.init_weights(opt.pretrained_model_path_E)
 
         if self.isTrain:
             # TODO: use num_classes pools
@@ -96,46 +104,26 @@ class FaceAgingEmbeddingModel(BaseModel):
             self.optimizer_G = torch.optim.Adam(self.netG.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizer_AC = torch.optim.Adam(self.netAC.parameters(), lr=opt.lr_AC, betas=(opt.beta1, 0.999))
+            self.optimizer_E = torch.optim.Adam(self.netE.parameters(), lr=opt.lr_E, betas=(opt.beta1, 0.999))
             self.optimizers.append(self.optimizer_G)
             self.optimizers.append(self.optimizer_D)
             self.optimizers.append(self.optimizer_AC)
+            self.optimizers.append(self.optimizer_E)
 
         if self.isTrain:
             if not self.opt.train_label_pairs and isinstance(self.opt.train_label_pairs, str):
                 with open(self.opt.train_label_pairs, 'r') as f:
                     self.opt.train_label_pairs = f.readlines()
 
-        self.pre_generate_embeddings()
-        self.pre_generate_labels()
+        if self.isTrain and opt.display_aging_visuals:
+            self.pre_generate_embeddings()
 
     def pre_generate_embeddings(self):
-        one_hot_labels = []
-        one = np.ones((self.opt.fineSize, self.opt.fineSize))
-
-        # for one sample
-        for L in range(self.opt.num_classes):
-            tmp = np.zeros((self.opt.num_classes, self.opt.fineSize, self.opt.fineSize))
-            tmp[L, :, :] = one
-            one_hot_labels.append(torch.Tensor(tmp))
-
-        # for a batch
         batch_one_hot_labels = []
+        embeddings = np.load(self.opt.aging_visual_embedding_path)
         for L in range(self.opt.num_classes):
-            tmp_one_hot_label = np.zeros((self.opt.batchSize, self.opt.num_classes, self.opt.fineSize, self.opt.fineSize))
-            for j in range(self.opt.batchSize):
-                tmp_one_hot_label[j, :, :, :] = one_hot_labels[L]
-                batch_one_hot_labels.append(torch.Tensor(tmp_one_hot_label).to(self.device))
-
-        self.one_hot_labels = one_hot_labels
+            batch_one_hot_labels.append(torch.Tensor(embeddings[L]).expand(self.opt.batchSize, self.opt.embedding_nc, self.opt.fineSize, self.opt.fineSize).to(self.device))
         self.batch_one_hot_labels = batch_one_hot_labels
-
-    def pre_generate_labels(self):
-        batch_labels = []
-        for L in range(self.opt.num_classes):
-            tmp_labels = np.zeros(self.opt.batchSize, dtype=np.int) + L
-            batch_labels.append(torch.LongTensor(tmp_labels).to(self.device))
-
-        self.batch_labels = batch_labels
 
     def get_fineSize(self, which_model='alexnet'):
         size = None
@@ -161,8 +149,15 @@ class FaceAgingEmbeddingModel(BaseModel):
         self.current_iter += 1
 
     def forward(self):
-        self.embedding_A = self.netE(self.real_A)
-        self.embedding_B = self.netE(self.real_B)
+        if isinstance(self.netE, torch.nn.DataParallel):
+            self.embedding_A = self.netE.module.get_feature(self.real_A)
+            self.embedding_B = self.netE.module.get_feature(self.real_B)
+        else:
+            self.embedding_A = self.netE.get_feature(self.real_A)
+            self.embedding_B = self.netE.get_feature(self.real_B)
+        # FIXME: detached here
+        self.embedding_A = self.embedding_A.detach().expand(self.real_A.size(0), self.opt.embedding_nc, self.real_A.size(2), self.real_A.size(3))
+        self.embedding_B = self.embedding_B.detach().expand(self.real_A.size(0), self.opt.embedding_nc, self.real_A.size(2), self.real_A.size(3))
         self.fake_B = self.netG(torch.cat((self.real_A, self.embedding_B), 1))
         if self.opt.fineSize_IP == self.opt.fineSize:
             self.fake_B_IP = self.fake_B
@@ -174,13 +169,13 @@ class FaceAgingEmbeddingModel(BaseModel):
             self.fake_B_AC = torch.nn.Upsample(size=(self.opt.fineSize_AC, self.opt.fineSize_AC), mode='bilinear', align_corners=True)(self.fake_B)
         # TODO: display_aging_visuals
         if self.opt.display_aging_visuals:
-            self.aging_visuals = {L: self.netG(torch.cat((self.real_A, self.batch_one_hot_labels[L][0:self.real_A.size(0),...]), 1)) for L in range(self.opt.num_classes)}
+            self.aging_visuals = {L: self.netG(torch.cat((self.real_A, self.batch_one_hot_labels[L][0:self.real_A.size(0), ...]), 1)) for L in range(self.opt.num_classes)}
 
     def backward_D(self):
         # Fake image with label_B
         # stop backprop to the generator by detaching fake_B
         # TODO: query from pool
-        fake_B = self.fake_B
+        fake_B = torch.cat((self.fake_B, self.embedding_B), 1)
         pred_fake = self.netD(fake_B.detach())
         self.loss_D_fake = self.criterionGAN(pred_fake, False)
 
@@ -253,6 +248,8 @@ class FaceAgingEmbeddingModel(BaseModel):
         self.optimizer_AC.zero_grad()
         self.backward_AC()
         self.optimizer_AC.step()
+
+        # TODO: update E
 
         # update G
         self.set_requires_grad(self.netD, False)
