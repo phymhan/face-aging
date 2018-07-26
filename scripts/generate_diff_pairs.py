@@ -26,6 +26,7 @@ mode = opt.mode
 src = '../data/UTK_'+mode+'.txt'
 N = opt.N
 binranges = [1, 11, 21, 31, 41, 51, 61, 71, 81, 91] + [float('inf')]
+binranges = [1, 21, 41, 61, 81] + [float('inf')]
 num_classes = len(binranges)-1
 
 paths = [[] for _ in range(num_classes)]

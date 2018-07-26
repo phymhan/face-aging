@@ -1,5 +1,6 @@
 import torch
 from util.image_pool import ImagePool
+from util.util import upsample2d
 from .base_model import BaseModel
 from . import networks
 import random
@@ -23,7 +24,6 @@ class FaceAgingModel(BaseModel):
         parser.set_defaults(dataset_mode='aligned')
         parser.set_defaults(which_model_netG='unet_256')
         parser.add_argument('--embedding_nc', type=int, default=10, help='# of embedding channels')
-        parser.add_argument('--pooling_AC', type=str, default='avg', help='which pooling layer in AC')
         parser.add_argument('--dropout', type=float, default=0.5, help='p in dropout layer')
         if is_train:
             parser.add_argument('--lambda_L1', type=float, default=0.001, help='weight for L1 loss')
@@ -31,6 +31,7 @@ class FaceAgingModel(BaseModel):
             parser.add_argument('--lambda_AC', type=float, default=1, help='weight for auxiliary classifier')
             parser.add_argument('--which_model_netIP', type=str, default='alexnet', help='model type for IP loss')
             parser.add_argument('--which_model_netAC', type=str, default='alexnet', help='model type for AC loss')
+            parser.add_argument('--pooling_AC', type=str, default='avg', help='which pooling layer in AC')
             parser.add_argument('--fineSize_IP', type=int, default=224, help='fineSize for IP')
             parser.add_argument('--fineSize_AC', type=int, default=224, help='fineSize for AC')
             parser.add_argument('--pretrained_model_path_IP', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to IP net')
@@ -153,27 +154,15 @@ class FaceAgingModel(BaseModel):
         # print(self.label_A, self.label_B, self.label_B_not)
         self.real_A = input[self.label_A].to(self.device)
         self.real_B = input[self.label_B].to(self.device)
-        if self.opt.fineSize_IP == self.opt.fineSize:
-            self.real_A_IP = self.real_A
-        else:
-            self.real_A_IP = torch.nn.Upsample(size=(self.opt.fineSize_IP, self.opt.fineSize_IP), mode='bilinear', align_corners=True)(self.real_A)
-        if self.opt.fineSize_AC == self.opt.fineSize:
-            self.real_B_AC = self.real_B
-        else:
-            self.real_B_AC = torch.nn.Upsample(size=(self.opt.fineSize_AC, self.opt.fineSize_AC), mode='bilinear', align_corners=True)(self.real_B)
+        self.real_A_IP = upsample2d(self.real_A, self.opt.fineSize_IP)
+        self.real_B_AC = upsample2d(self.real_B, self.opt.fineSize_AC)
         self.image_paths = input['path_'+str(self.label_B)]
         self.current_iter += 1
 
     def forward(self):
         self.fake_B = self.netG(torch.cat((self.real_A, self.batch_one_hot_labels[self.label_B][0:self.real_A.size(0),...]), 1))
-        if self.opt.fineSize_IP == self.opt.fineSize:
-            self.fake_B_IP = self.fake_B
-        else:
-            self.fake_B_IP = torch.nn.Upsample(size=(self.opt.fineSize_IP, self.opt.fineSize_IP), mode='bilinear', align_corners=True)(self.fake_B)
-        if self.opt.fineSize_AC == self.opt.fineSize:
-            self.fake_B_AC = self.fake_B
-        else:
-            self.fake_B_AC = torch.nn.Upsample(size=(self.opt.fineSize_AC, self.opt.fineSize_AC), mode='bilinear', align_corners=True)(self.fake_B)
+        self.fake_B_IP = upsample2d(self.fake_B, self.opt.fineSize_IP)
+        self.fake_B_AC = upsample2d(self.fake_B, self.opt.fineSize_AC)
         if self.opt.display_aging_visuals:
             self.aging_visuals = {L: self.netG(torch.cat((self.real_A, self.batch_one_hot_labels[L][0:self.real_A.size(0),...]), 1)) for L in range(self.opt.num_classes)}
 
@@ -236,7 +225,7 @@ class FaceAgingModel(BaseModel):
         pred_fake = self.netAC(self.fake_B_AC)
         self.loss_G_AC = self.criterionAC(pred_fake, self.batch_labels[self.label_B][0:self.real_A.size(0),...]) * self.opt.lambda_AC
 
-        self.loss_G = self.loss_G_GAN + self.loss_G_IP + self.loss_G_L1
+        self.loss_G = self.loss_G_GAN + self.loss_G_IP + self.loss_G_L1 + self.loss_G_AC
 
         self.loss_G.backward()
 

@@ -134,7 +134,7 @@ def define_AC(which_model_netAC, input_nc=3, num_classes=0, init_type='normal', 
     return init_net(netAC, init_type, gpu_ids)
 
 
-def define_E(which_model_netE, input_nc=3, init_type='kaiming', pooling='None', dropout=0.5, fc_dim=64, gpu_ids=[]):
+def define_E(which_model_netE, input_nc=3, init_type='kaiming', pooling='None', dropout=0.5, fc_dim=64, cnn_dim=[], gpu_ids=[]):
     # Encoder is a Siamese Network
     netE = None
 
@@ -146,12 +146,12 @@ def define_E(which_model_netE, input_nc=3, init_type='kaiming', pooling='None', 
         raise NotImplementedError('Model [%s] is not implemented.' % opt.which_model)
 
     # define Siamese Network
-    netE = SiameseNetwork(3, base, pooling, dropout, fc_dim)
+    netE = SiameseFeatures(3, base, pooling, dropout, fc_dim, cnn_dim)
 
     return init_net(netE, init_type, gpu_ids)
 
 
-def define_S(which_model_netS, input_nc=3, init_type='kaiming', pooling='None', dropout=0.5, fc_dim=64, gpu_ids=[]):
+def define_S(which_model_netS, input_nc=3, init_type='kaiming', pooling='None', dropout=0.5, fc_dim=64, cnn_dim=[], gpu_ids=[]):
     # AC for faceaging_embedding model is a Siamese Network
     netS = None
 
@@ -163,7 +163,7 @@ def define_S(which_model_netS, input_nc=3, init_type='kaiming', pooling='None', 
         raise NotImplementedError('Model [%s] is not implemented.' % opt.which_model)
 
     # define Siamese Network
-    netS = SiameseNetwork(3, base, pooling, dropout, fc_dim)
+    netS = SiameseNetwork(3, base, pooling, dropout, fc_dim, cnn_dim)
 
     return init_net(netS, init_type, gpu_ids)
 #
@@ -447,7 +447,7 @@ class PixelDiscriminator(nn.Module):
 
 
 class SiameseNetwork(nn.Module):
-    def __init__(self, num_classes=3, base=None, pooling='avg', dropout=0.5, fc_dim=64):
+    def __init__(self, num_classes=3, base=None, pooling='avg', dropout=0.5, fc_dim=64, cnn_dim=[]):
         super(SiameseNetwork, self).__init__()
         self.pooling = pooling
         if pooling:
@@ -455,6 +455,20 @@ class SiameseNetwork(nn.Module):
         else:
             fw = 6
         self.base = base
+        if cnn_dim:
+            cnns = []
+            nf_prev = base.feature_dim
+            for nf in cnn_dim:
+                cnns += [
+                    nn.Conv2d(nf_prev, nf, kernel_size=3, stride=1, padding=1, bias=True),
+                    nn.BatchNorm2d(nf),
+                    nn.ReLU(True)
+                ]
+                nf_prev = nf
+            base.feature_dim = nf
+            self.cnn = nn.Sequential(*cnns)
+        else:
+            self.cnn = None
         self.fc = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(base.feature_dim * fw * fw * 2, fc_dim),
@@ -462,9 +476,12 @@ class SiameseNetwork(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(fc_dim, num_classes),
         )
+        self.feature_dim = base.feature_dim
 
     def forward_once(self, x):
         output = self.base.forward(x)
+        if self.cnn:
+            output = self.cnn(output)
         if self.pooling == 'avg':
             output = nn.AvgPool2d(output.size(2))(output)
         elif self.pooling == 'max':
@@ -481,6 +498,51 @@ class SiameseNetwork(nn.Module):
 
     def get_feature(self, x):
         output = self.base.forward(x)
+        if self.cnn:
+            output = self.cnn(output)
+        if self.pooling == 'avg':
+            output = nn.AvgPool2d(output.size(2))(output)
+        elif self.pooling == 'max':
+            output = nn.MaxPool2d(output.size(2))(output)
+        return output
+
+    def init_weights(self, state_dict):
+        # only base needs pretrained weights
+        self.base.init_weights(state_dict)
+
+
+class SiameseFeatures(nn.Module):
+    def __init__(self, num_classes=3, base=None, pooling='avg', dropout=0.5, fc_dim=64, cnn_dim=[]):
+        super(SiameseFeatures, self).__init__()
+        self.pooling = pooling
+        if pooling:
+            fw = 1
+        else:
+            fw = 6
+        self.base = base
+        if cnn_dim:
+            cnns = []
+            nf_prev = base.feature_dim
+            for i in range(len(cnn_dim) - 1):
+                nf = cnn_dim[i]
+                cnns += [
+                    nn.Conv2d(nf_prev, nf, kernel_size=3, stride=1, padding=1, bias=True),
+                    nn.BatchNorm2d(nf),
+                    nn.ReLU(True)
+                ]
+                nf_prev = nf
+            nf = cnn_dim[-1]
+            cnns += [nn.Conv2d(nf_prev, nf, kernel_size=3, stride=1, padding=1, bias=True)]
+            base.feature_dim = nf
+            self.cnn = nn.Sequential(*cnns)
+        else:
+            self.cnn = None
+        self.feature_dim = base.feature_dim
+
+    def forward(self, x):
+        output = self.base.forward(x)
+        if self.cnn:
+            output = self.cnn(output)
         if self.pooling == 'avg':
             output = nn.AvgPool2d(output.size(2))(output)
         elif self.pooling == 'max':

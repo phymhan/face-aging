@@ -68,3 +68,16 @@ def parse_age_label(fname, binranges):
         if (age >= binranges[l]) and (age < binranges[l+1]):
             break
     return l
+
+
+def upsample2d(inputTensor, targetSize):
+    # 2d upsampling of a 4d tensor
+    if inputTensor.size(2) == targetSize:
+        return inputTensor
+    else:
+        return torch.nn.Upsample(size=(targetSize, targetSize), mode='bilinear', align_corners=True)(inputTensor)
+
+
+def expand2d(inputTensor, targetSize):
+    # expand a 4d tensor along axis 2 and 3 to targetSize
+    return inputTensor.expand(inputTensor.size(0), inputTensor.size(1), targetSize, targetSize)
