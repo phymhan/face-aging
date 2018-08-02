@@ -1,4 +1,5 @@
 import torch
+import torchvision.transforms as transforms
 from util.image_pool import ImagePool
 from util.util import upsample2d
 from .base_model import BaseModel
@@ -24,7 +25,6 @@ class FaceAgingModel(BaseModel):
         parser.set_defaults(dataset_mode='aligned')
         parser.set_defaults(which_model_netG='unet_256')
         parser.add_argument('--embedding_nc', type=int, default=10, help='# of embedding channels')
-        parser.add_argument('--dropout', type=float, default=0.5, help='p in dropout layer')
         if is_train:
             parser.add_argument('--lambda_L1', type=float, default=0.001, help='weight for L1 loss')
             parser.add_argument('--lambda_IP', type=float, default=0.1, help='weight for identity preserving loss')
@@ -32,6 +32,7 @@ class FaceAgingModel(BaseModel):
             parser.add_argument('--which_model_netIP', type=str, default='alexnet', help='model type for IP loss')
             parser.add_argument('--which_model_netAC', type=str, default='alexnet', help='model type for AC loss')
             parser.add_argument('--pooling_AC', type=str, default='avg', help='which pooling layer in AC')
+            parser.add_argument('--dropout_AC', type=float, default=0.5, help='p in dropout layer')
             parser.add_argument('--fineSize_IP', type=int, default=224, help='fineSize for IP')
             parser.add_argument('--fineSize_AC', type=int, default=224, help='fineSize for AC')
             parser.add_argument('--pretrained_model_path_IP', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to IP net')
@@ -64,20 +65,19 @@ class FaceAgingModel(BaseModel):
         if self.isTrain:
             use_sigmoid = opt.no_lsgan
             # define netD
-            self.netD = networks.define_D(opt.embedding_nc + opt.output_nc, opt.ndf,
-                                          opt.which_model_netD,
+            self.netD = networks.define_D(opt.embedding_nc + opt.output_nc, opt.ndf, opt.which_model_netD,
                                           opt.n_layers_D, opt.norm, use_sigmoid, opt.init_type, self.gpu_ids)
             # define netIP, which is not saved
             self.netIP = networks.define_IP(opt.which_model_netIP, opt.input_nc, self.gpu_ids)
-            self.netIP.module.init_weights(opt.pretrained_model_path_IP)
+            if isinstance(self.netIP, torch.nn.DataParallel):
+                self.netIP.module.load_pretrained(opt.pretrained_model_path_IP)
+            else:
+                self.netIP.load_pretrained(opt.pretrained_model_path_IP)
             # define netAC
-            self.netAC = networks.define_AC(opt.which_model_netAC, opt.input_nc, opt.num_classes, opt.init_type,
-                                            opt.pooling_AC, self.opt.dropout, self.gpu_ids)
+            self.netAC = networks.define_AC(opt.which_model_netAC, opt.input_nc, opt.init_type, opt.num_classes,
+                                            pooling=opt.pooling_AC, dropout=opt.dropout_AC, gpu_ids=self.gpu_ids)
             if not opt.continue_train and opt.pretrained_model_path_AC:
-                if isinstance(self.netAC, torch.nn.DataParallel):
-                    self.netAC.module.init_weights(opt.pretrained_model_path_AC)
-                else:
-                    self.netAC.init_weights(opt.pretrained_model_path_AC)
+                self.netAC.load_state_dict(torch.load(opt.pretrained_model_path_AC, map_location=str(self.device)), strict=True)  # debug
 
         if self.isTrain:
             # TODO: use num_classes pools
@@ -85,6 +85,7 @@ class FaceAgingModel(BaseModel):
             # define loss functions
             self.criterionGAN = networks.GANLoss(use_lsgan=not opt.no_lsgan).to(self.device)
             self.criterionL1 = torch.nn.L1Loss()
+            self.criterionIP = torch.nn.MSELoss()
             self.criterionAC = torch.nn.CrossEntropyLoss()
 
             # initialize optimizers
@@ -103,6 +104,10 @@ class FaceAgingModel(BaseModel):
 
         self.pre_generate_embeddings()
         self.pre_generate_labels()
+
+        if self.isTrain:
+            self.transform_IP = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+            self.transform_AC = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
 
     def pre_generate_embeddings(self):
         one_hot_labels = []
@@ -190,12 +195,12 @@ class FaceAgingModel(BaseModel):
 
     def backward_AC(self):
         # Real
-        pred = self.netAC(self.real_B_AC)
+        pred = self.netAC(self.transform_AC(self.real_B_AC))
         self.loss_AC_real = self.criterionAC(pred, self.batch_labels[self.label_B][0:self.real_A.size(0),...])
 
         # Fake
         if not self.opt.no_AC_on_fake:
-            pred = self.netAC(self.fake_B_AC.detach())
+            pred = self.netAC(self.transform_AC(self.fake_B_AC.detach()))
             self.loss_AC_fake = self.criterionAC(pred, self.batch_labels[self.label_B][0:self.real_A.size(0),...])
         else:
             self.loss_AC_fake = 0.0
@@ -217,12 +222,12 @@ class FaceAgingModel(BaseModel):
             self.loss_G_L1 = 0.0
 
         # IP loss
-        feature_A = self.netIP(self.real_A_IP).detach()
+        feature_A = self.netIP(self.transform_IP(self.real_A_IP)).detach()
         feature_A.requires_grad = False
-        self.loss_G_IP = torch.nn.MSELoss()(self.netIP(self.fake_B_IP), feature_A) * self.opt.lambda_IP
+        self.loss_G_IP = self.criterionIP(self.netIP(self.transform_IP(self.fake_B_IP)), feature_A) * self.opt.lambda_IP
 
         # AC loss
-        pred_fake = self.netAC(self.fake_B_AC)
+        pred_fake = self.netAC(self.transform_AC(self.fake_B_AC))
         self.loss_G_AC = self.criterionAC(pred_fake, self.batch_labels[self.label_B][0:self.real_A.size(0),...]) * self.opt.lambda_AC
 
         self.loss_G = self.loss_G_GAN + self.loss_G_IP + self.loss_G_L1 + self.loss_G_AC

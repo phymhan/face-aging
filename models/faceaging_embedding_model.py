@@ -1,6 +1,7 @@
 import torch
+import torchvision.transforms as transforms
 from util.image_pool import ImagePool
-from util.util import upsample2d, expand2d
+from util.util import upsample2d, expand2d, expand2d_as
 from .base_model import BaseModel
 from . import networks
 import random
@@ -23,12 +24,14 @@ class FaceAgingEmbeddingModel(BaseModel):
         parser.set_defaults(norm='batch')
         parser.set_defaults(dataset_mode='aligned')
         parser.set_defaults(which_model_netG='unet_256')
+        parser.add_argument('--norm_G', type=str, default='batch', help='instance normalization or batch normalization')
+        parser.add_argument('--norm_D', type=str, default='batch', help='instance normalization or batch normalization')
         parser.add_argument('--embedding_nc', type=int, default=10, help='# of embedding channels')
-        parser.add_argument('--dropout', type=float, default=0.5, help='p in dropout layer')
         parser.add_argument('--which_model_netE', type=str, default='alexnet', help='model type for E loss')
-        parser.add_argument('--pooling_E', type=str, default='avg', help='which pooling layer in E')
-        parser.add_argument('--fc_dim_E', type=int, default=64, help='fc is not used, but should match that of the pretrained model')
-        parser.add_argument('--cnn_dim_E', type=int, nargs='+', default=[], help='cnn kernel dims for feature dimension reduction')
+        parser.add_argument('--pooling_E', type=str, default='max', help='which pooling layer in E')
+        parser.add_argument('--cnn_dim_E', type=int, nargs='+', default=[64, 1], help='cnn kernel dims for feature dimension reduction')
+        parser.add_argument('--cnn_pad_E', type=int, default=1, help='padding of cnn layers defined by cnn_dim_E')
+        parser.add_argument('--cnn_relu_slope_E', type=float, default=0.5, help='slope of LeakyReLU for SiameseNetwork.cnn module')
         parser.add_argument('--fineSize_E', type=int, default=224, help='fineSize for AC')
         parser.add_argument('--pretrained_model_path_E', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to E net')
         parser.add_argument('--embedding_mean', type=float, nargs='*', default=[0.0], help='means of embedding')
@@ -44,6 +47,7 @@ class FaceAgingEmbeddingModel(BaseModel):
             parser.add_argument('--aging_visual_embedding_path', type=str, default='pretrained_models/features.npy', help='pregenerated age embeddings')
             parser.add_argument('--lr_E', type=float, default=0.0002, help='learning rate for E')
             parser.add_argument('--no_trick', action='store_true')
+            parser.add_argument('--embedding_reconstruction_criterion', type=str, default='mse', help='which criterion to use for embedding reconstruction loss')
 
         return parser
 
@@ -62,30 +66,39 @@ class FaceAgingEmbeddingModel(BaseModel):
             self.model_names = ['G', 'E']
         # load/define networks
         self.netG = networks.define_G(opt.input_nc + opt.embedding_nc, opt.output_nc, opt.ngf,
-                                      opt.which_model_netG, opt.norm, not opt.no_dropout, opt.init_type, self.gpu_ids)
+                                      opt.which_model_netG, opt.norm_G, not opt.no_dropout, opt.init_type, self.gpu_ids)
 
         if self.isTrain:
             use_sigmoid = opt.no_lsgan
             # define netD
-            self.netD = networks.define_D(opt.embedding_nc + opt.output_nc, opt.ndf,
-                                          opt.which_model_netD,
-                                          opt.n_layers_D, opt.norm, use_sigmoid, opt.init_type, self.gpu_ids)
+            self.netD = networks.define_D(opt.embedding_nc + opt.output_nc, opt.ndf, opt.which_model_netD,
+                                          opt.n_layers_D, opt.norm_D, use_sigmoid, opt.init_type, self.gpu_ids)
             # define netIP, which is not saved
             self.netIP = networks.define_IP(opt.which_model_netIP, opt.input_nc, self.gpu_ids)
-            self.netIP.module.init_weights(opt.pretrained_model_path_IP)
-            # define netE, which is part of a Siamese network (SiameseFeatures)
-            self.netE = networks.define_E(opt.which_model_netE, opt.input_nc, opt.init_type,
-                                          opt.pooling_E, opt.dropout, opt.fc_dim_E, opt.cnn_dim_E, self.gpu_ids)
-            self.netE.module.load_state_dict(torch.load(opt.pretrained_model_path_E), strict=False)
+            if isinstance(self.netIP, torch.nn.DataParallel):
+                self.netIP.module.load_pretrained(opt.pretrained_model_path_IP)
+            else:
+                self.netIP.load_pretrained(opt.pretrained_model_path_IP)
+            # define netE, which is part of a Siamese network (SiameseFeature)
+            self.netE = networks.define_E(opt.which_model_netE, 3, init_type=opt.init_type, pooling=opt.pooling_E,
+                                          cnn_dim=opt.cnn_dim_E, cnn_pad=opt.cnn_pad_E,
+                                          cnn_relu_slope=opt.cnn_relu_slope_E, gpu_ids=self.gpu_ids)
+            self.netE.module.load_state_dict(torch.load(opt.pretrained_model_path_E, map_location=str(self.device)), strict=False)  # TODO: map_location
 
         if self.isTrain:
             # TODO: use num_classes pools
             assert(opt.pool_size == 0)
             self.fake_B_pool = [ImagePool(opt.pool_size) for _ in range(self.opt.num_classes)]
             # define loss functions
-            self.criterionGAN = networks.GANLoss(use_lsgan=not opt.no_lsgan).to(self.device)
+            self.criterionGAN = networks.GANLoss2(use_lsgan=not opt.no_lsgan).to(self.device)
             self.criterionL1 = torch.nn.L1Loss()
-            # self.criterionAC = torch.nn.CrossEntropyLoss()
+            self.criterionIP = torch.nn.MSELoss()
+            if opt.embedding_reconstruction_criterion.lower() == 'mse':
+                self.criterionRec = torch.nn.MSELoss()
+            elif opt.embedding_reconstruction_criterion.lower() == 'l1':
+                self.criterionRec = torch.nn.L1Loss()
+            else:
+                raise NotImplementedError('Not Implemented')
 
             # initialize optimizers
             self.optimizers = []
@@ -101,17 +114,22 @@ class FaceAgingEmbeddingModel(BaseModel):
         self.embedding_std = opt.embedding_std
         self.embedding_normalize = lambda x: (x - opt.embedding_mean[0]) / opt.embedding_std[0]
 
-        # if self.isTrain and opt.display_aging_visuals:
-        #     self.pre_generate_embeddings()
+        if self.isTrain and opt.display_aging_visuals and opt.aging_visual_embedding_path:
+            self.pre_generate_embeddings(opt.aging_visual_embedding_path)
 
-    def pre_generate_embeddings(self):
-        batch_embeddings = []
-        embeddings = np.load(self.opt.aging_visual_embedding_path)
-        # perform channel-wise normalization
-        embeddings = self.embedding_normalize(embeddings)
-        for L in range(self.opt.num_classes):
-            batch_embeddings.append(torch.Tensor(embeddings[L]).to(self.device))
-        self.batch_embeddings = batch_embeddings
+        if self.isTrain:
+            # self.transform_IP = lambda x: x
+            self.transform_IP = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+        # self.transform_E = lambda x: x
+        self.transform_E = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+
+    def pre_generate_embeddings(self, npy_file_path):
+        fixed_embeddings = []
+        # embeddings should be list of 4-D tensors/arrays (or a 5-D tensor/array)
+        embeddings_npy = np.load(npy_file_path)
+        for L in range(embeddings_npy.shape[0]):
+            fixed_embeddings.append(torch.Tensor(embeddings_npy[L]).to(self.device))
+        self.fixed_embeddings = fixed_embeddings
 
     def set_input(self, input):
         # print(self.label_A, self.label_B, self.label_B_not)
@@ -121,24 +139,27 @@ class FaceAgingEmbeddingModel(BaseModel):
         self.real_A_E = upsample2d(self.real_A, self.opt.fineSize_E)
         self.real_B_E = upsample2d(self.real_B, self.opt.fineSize_E)
         self.label_AB = input['label']  # relation between real_A and real_B
-        if self.opt.display_aging_visuals:
-            self.aging_visuals_orig = [input[L].to(self.device) for L in range(self.opt.num_classes)]
+        if self.opt.display_aging_visuals and self.opt.dataset_mode == 'faceaging_embedding_vis':
+            self.aging_visuals_src = [input[L].to(self.device) for L in range(self.opt.num_classes)]
         self.image_paths = input['B_paths']
         self.current_iter += 1
 
     def forward(self):
         # FIXME: embeddings detached here, fix me if updating E, see BicycleGAN
-        self.embedding_A = self.embedding_normalize(self.netE(self.real_A_E).detach())
-        self.embedding_B = self.embedding_normalize(self.netE(self.real_B_E).detach())
+        self.embedding_A = self.embedding_normalize(self.netE(self.transform_E(self.real_A_E)).detach())
+        self.embedding_B = self.embedding_normalize(self.netE(self.transform_E(self.real_B_E)).detach())
         self.fake_B = self.netG(torch.cat((self.real_A, expand2d(self.embedding_B, self.opt.fineSize)), 1))
         self.fake_B_IP = upsample2d(self.fake_B, self.opt.fineSize_IP)
         self.fake_B_E = upsample2d(self.fake_B, self.opt.fineSize_E)
         if self.opt.display_aging_visuals:
             aging_visuals = {}
             for L in range(self.opt.num_classes):
-                img = upsample2d(self.aging_visuals_orig[L], self.opt.fineSize_E)
-                embedding = self.embedding_normalize(self.netE(img))
-                aging_visuals[L] = self.netG(torch.cat((self.real_A, expand2d(embedding, self.opt.fineSize)), 1))
+                if self.opt.dataset_mode == 'faceaging_embedding_vis':
+                    img = upsample2d(self.aging_visuals_src[L], self.opt.fineSize_E)
+                    embedding = self.embedding_normalize(self.netE(self.transform_E(img)))
+                else:
+                    embedding = self.embedding_normalize(self.fixed_embeddings[L])
+                aging_visuals[L] = self.netG(torch.cat((self.real_A, expand2d_as(embedding, self.real_A)), 1))
             self.aging_visuals = aging_visuals
 
     def backward_D(self):
@@ -147,22 +168,24 @@ class FaceAgingEmbeddingModel(BaseModel):
         # TODO: query from pool
         fake_B = torch.cat((self.fake_B, expand2d(self.embedding_B, self.opt.fineSize)), 1)
         pred_fake = self.netD(fake_B.detach())
-        self.loss_D_fake = self.criterionGAN(pred_fake, False)
+        # self.loss_D_fake = self.criterionGAN(pred_fake, False)
+        self.loss_D_fake = self.criterionGAN(pred_fake, [0])
 
         # Real_B image with embedding_B
         real_B_embedding_B = torch.cat((self.real_B, expand2d(self.embedding_B, self.opt.fineSize)), 1)
         pred_real = self.netD(real_B_embedding_B)
-        self.loss_D_real_right = self.criterionGAN(pred_real, True)
+        # self.loss_D_real_right = self.criterionGAN(pred_real, True)
+        self.loss_D_real_right = self.criterionGAN(pred_real, [1])
 
         if not self.opt.no_trick:
             # TODO: is this trick necessary?
             # Real_B image with embedding_A
             real_B_embedding_A = torch.cat((self.real_B, expand2d(self.embedding_A, self.opt.fineSize)), 1)
             pred_real = self.netD(real_B_embedding_A)
-            if self.label_AB == 1:
-                self.loss_D_real_wrong = self.criterionGAN(pred_real, True)
-            else:
-                self.loss_D_real_wrong = self.criterionGAN(pred_real, False)
+            # FIXME: only diff is allowed, or batchSize should be 1
+            target_label = [1 if L == 1 else 0 for L in self.label_AB]
+            self.loss_D_real_wrong = self.criterionGAN(pred_real, target_label)
+            # self.loss_D_real_wrong = self.criterionGAN(pred_real, [0])
             # Combined loss
             self.loss_D = (self.loss_D_fake + (self.loss_D_real_right + self.loss_D_real_wrong) * 0.5) * 0.5
         else:
@@ -176,7 +199,8 @@ class FaceAgingEmbeddingModel(BaseModel):
         # First, G(A) should fake the discriminator
         fake_B = torch.cat((self.fake_B, expand2d(self.embedding_B, self.opt.fineSize)), 1)
         pred_fake = self.netD(fake_B)
-        self.loss_G_GAN = self.criterionGAN(pred_fake, True)
+        # self.loss_G_GAN = self.criterionGAN(pred_fake, True)
+        self.loss_G_GAN = self.criterionGAN(pred_fake, [1])
 
         # L1: fake_B ~= real_A
         if self.opt.lambda_L1 > 0.0:
@@ -185,14 +209,14 @@ class FaceAgingEmbeddingModel(BaseModel):
             self.loss_G_L1 = 0.0
 
         # IP loss
-        feature_A = self.netIP(self.real_A_IP).detach()
+        feature_A = self.netIP(self.transform_IP(self.real_A_IP)).detach()
         feature_A.requires_grad = False
-        self.loss_G_IP = torch.nn.MSELoss()(self.netIP(self.fake_B_IP), feature_A) * self.opt.lambda_IP
+        self.loss_G_IP = self.criterionIP(self.netIP(self.transform_IP(self.fake_B_IP)), feature_A) * self.opt.lambda_IP
 
         # Embedding reconstruction loss
-        pred_embedding = self.embedding_normalize(self.netE(self.fake_B_E))
-        print('realA: %.3f, realB: %.3f, fakeB: %.3f' % (self.embedding_A[0,0,0,0], self.embedding_B[0,0,0,0], pred_embedding[0,0,0,0]))
-        self.loss_z_rec = torch.nn.MSELoss()(pred_embedding, self.embedding_B.detach()) * self.opt.lambda_E
+        pred_embedding = self.embedding_normalize(self.netE(self.transform_E(self.fake_B_E)))
+        # print('realA: %.3f, realB: %.3f, fakeB: %.3f' % (self.embedding_A[0,0,0,0], self.embedding_B[0,0,0,0], pred_embedding[0,0,0,0]))  # debug
+        self.loss_z_rec = self.criterionRec(pred_embedding, self.embedding_B.detach()) * self.opt.lambda_E
 
         # Combined loss
         self.loss_G = self.loss_G_GAN + self.loss_G_IP + self.loss_G_L1 + self.loss_z_rec

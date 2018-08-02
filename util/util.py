@@ -81,3 +81,7 @@ def upsample2d(inputTensor, targetSize):
 def expand2d(inputTensor, targetSize):
     # expand a 4d tensor along axis 2 and 3 to targetSize
     return inputTensor.expand(inputTensor.size(0), inputTensor.size(1), targetSize, targetSize)
+
+
+def expand2d_as(inputTensor, targetTensor):
+    return inputTensor.expand(targetTensor.size(0), inputTensor.size(1), targetTensor.size(2), targetTensor.size(3))

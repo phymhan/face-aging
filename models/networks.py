@@ -3,6 +3,8 @@ import torch.nn as nn
 from torch.nn import init
 import functools
 from torch.optim import lr_scheduler
+from util.util import expand2d
+import numpy as np
 
 ###############################################################################
 # Helper Functions
@@ -108,7 +110,7 @@ def define_IP(which_model_netIP, input_nc, gpu_ids=[]):
 
     if which_model_netIP == 'alexnet':
         assert(input_nc == 3)
-        netIP = AlexNetFeatures('None')
+        netIP = AlexNetFeature('None')
     else:
         raise NotImplementedError('Identity-preserving model name [%s] is not recognized' % which_model_netIP)
 
@@ -119,12 +121,12 @@ def define_IP(which_model_netIP, input_nc, gpu_ids=[]):
     return netIP  # do not init weights netIP here, weights will be reloaded anyways
 
 
-def define_AC(which_model_netAC, input_nc=3, num_classes=0, init_type='normal', pooling='avg', dropout=0.5, gpu_ids=[]):
+def define_AC(which_model_netAC, input_nc=3, init_type='normal', num_classes=0, pooling='avg', dropout=0.5, gpu_ids=[]):
     netAC = None
 
     if which_model_netAC == 'alexnet':
         assert(input_nc == 3)
-        netAC = AlexNet(num_classes, dropout)
+        netAC = AlexNet(num_classes)
     elif which_model_netAC == 'alexnet_lite':
         assert(input_nc == 3)
         netAC = AlexNetLite(num_classes, pooling, dropout)
@@ -134,39 +136,42 @@ def define_AC(which_model_netAC, input_nc=3, num_classes=0, init_type='normal', 
     return init_net(netAC, init_type, gpu_ids)
 
 
-def define_E(which_model_netE, input_nc=3, init_type='kaiming', pooling='None', dropout=0.5, fc_dim=64, cnn_dim=[], gpu_ids=[]):
+def define_E(which_model_netE, input_nc=3, init_type='kaiming', pooling='max',
+             cnn_dim=[], cnn_pad=1, cnn_relu_slope=0.2, gpu_ids=[]):
     # Encoder is a Siamese Network
     netE = None
 
     if which_model_netE == 'alexnet':
-        base = AlexNetFeatures(pooling='None')
+        base = AlexNetFeature(pooling='None')
     elif 'resnet' in which_model_netE:
-        base = ResNetFeatures(which_model_netE)
+        base = ResNetFeature(which_model_netE)
     else:
         raise NotImplementedError('Model [%s] is not implemented.' % opt.which_model)
 
     # define Siamese Network
-    netE = SiameseFeatures(3, base, pooling, dropout, fc_dim, cnn_dim)
+    netE = SiameseFeature(base, pooling=pooling, cnn_dim=cnn_dim, cnn_pad=cnn_pad, cnn_relu_slope=cnn_relu_slope)
 
     return init_net(netE, init_type, gpu_ids)
 
 
-def define_S(which_model_netS, input_nc=3, init_type='kaiming', pooling='None', dropout=0.5, fc_dim=64, cnn_dim=[], gpu_ids=[]):
+def define_S(which_model_netS, input_nc=3, init_type='kaiming', num_classes=3, pooling='max', cnn_dim=[], cnn_pad=1,
+             cnn_relu_slope=0.2, fc_dim=[], fc_relu_slope=0.2, dropout=0.5, no_cxn=False, gpu_ids=[]):
     # AC for faceaging_embedding model is a Siamese Network
     netS = None
 
     if which_model_netS == 'alexnet':
-        base = AlexNetFeatures(pooling='None')
+        base = AlexNetFeature(pooling='None')
     elif 'resnet' in which_model_netS:
-        base = ResNetFeatures(which_model_netS)
+        base = ResNetFeature(which_model_netS)
     else:
         raise NotImplementedError('Model [%s] is not implemented.' % opt.which_model)
 
     # define Siamese Network
-    netS = SiameseNetwork(3, base, pooling, dropout, fc_dim, cnn_dim)
+    netS = SiameseNetwork(base, num_classes, pooling=pooling, cnn_dim=cnn_dim, cnn_pad=cnn_pad, cnn_relu_slope=cnn_relu_slope,
+                          fc_dim=fc_dim, fc_relu_slope=fc_relu_slope, dropout=dropout, no_cxn=no_cxn)
 
     return init_net(netS, init_type, gpu_ids)
-#
+
 
 ##############################################################################
 # Classes
@@ -196,6 +201,25 @@ class GANLoss(nn.Module):
 
     def __call__(self, input, target_is_real):
         target_tensor = self.get_target_tensor(input, target_is_real)
+        return self.loss(input, target_tensor)
+
+
+# Allows mix of True (1) and False (0) in a batch
+class GANLoss2(nn.Module):
+    def __init__(self, use_lsgan=True):
+        super(GANLoss2, self).__init__()
+        if use_lsgan:
+            self.loss = nn.MSELoss()
+        else:
+            self.loss = nn.BCELoss()
+
+    def get_target_tensor(self, input, target_label):
+        # FIXME: hardcoded cuda()
+        target_tensor = torch.Tensor(np.array(target_label).reshape(len(target_label), 1, 1, 1)).cuda()
+        return target_tensor.expand_as(input)
+
+    def __call__(self, input, target_label):
+        target_tensor = self.get_target_tensor(input, target_label)
         return self.loss(input, target_tensor)
 
 
@@ -446,98 +470,107 @@ class PixelDiscriminator(nn.Module):
         return self.net(input)
 
 
+###############################################################################
+# Siamese Networks
+###############################################################################
 class SiameseNetwork(nn.Module):
-    def __init__(self, num_classes=3, base=None, pooling='avg', dropout=0.5, fc_dim=64, cnn_dim=[]):
+    def __init__(self, base=None, num_classes=3, pooling='avg', cnn_dim=[], cnn_pad=1, cnn_relu_slope=0.5, fc_dim=[],
+                 fc_relu_slope=0.2, dropout=0.5, no_cxn=False):
         super(SiameseNetwork, self).__init__()
+        assert (num_classes == fc_dim[-1])
         self.pooling = pooling
-        if pooling:
-            fw = 1
-        else:
-            fw = 6
+        # base
         self.base = base
+        # additional cnns
         if cnn_dim:
-            cnns = []
+            conv_block = []
             nf_prev = base.feature_dim
-            for nf in cnn_dim:
-                cnns += [
-                    nn.Conv2d(nf_prev, nf, kernel_size=3, stride=1, padding=1, bias=True),
+            for i in range(len(cnn_dim) - 1):
+                nf = cnn_dim[i]
+                conv_block += [
+                    nn.Conv2d(nf_prev, nf, kernel_size=3, stride=1, padding=cnn_pad, bias=True),
                     nn.BatchNorm2d(nf),
-                    nn.ReLU(True)
+                    nn.LeakyReLU(cnn_relu_slope)
                 ]
                 nf_prev = nf
-            base.feature_dim = nf
-            self.cnn = nn.Sequential(*cnns)
+            conv_block += [nn.Conv2d(nf_prev, cnn_dim[-1], kernel_size=3, stride=1, padding=cnn_pad, bias=True)]
+            self.cnn = nn.Sequential(*conv_block)
+            feature_dim = cnn_dim[-1]
         else:
             self.cnn = None
-        self.fc = nn.Sequential(
+            feature_dim = base.feature_dim
+        # connection
+        cxn_blocks = [
+            nn.BatchNorm2d(cnn_dim[-1]),
+            nn.LeakyReLU(cnn_relu_slope)
+        ]
+        self.cxn = None if no_cxn else nn.Sequential(*cxn_blocks)
+        # fc layers
+        fc_blocks = []
+        nf_prev = feature_dim * 2
+        for i in range(len(fc_dim) - 1):
+            nf = fc_dim[i]
+            fc_blocks += [
+                nn.Dropout(dropout),
+                nn.Conv2d(nf_prev, nf, kernel_size=1, stride=1, padding=0, bias=True),
+                nn.LeakyReLU(fc_relu_slope)
+            ]
+            nf_prev = nf
+        fc_blocks += [
             nn.Dropout(dropout),
-            nn.Linear(base.feature_dim * fw * fw * 2, fc_dim),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(fc_dim, num_classes),
-        )
-        self.feature_dim = base.feature_dim
+            nn.Conv2d(nf_prev, fc_dim[-1], kernel_size=1, stride=1, padding=0, bias=True)
+        ]
+        self.fc = nn.Sequential(*fc_blocks)
+        self.feature_dim = feature_dim
 
     def forward_once(self, x):
         output = self.base.forward(x)
         if self.cnn:
             output = self.cnn(output)
+        if self.cxn:
+            output = self.cxn(output)
         if self.pooling == 'avg':
             output = nn.AvgPool2d(output.size(2))(output)
         elif self.pooling == 'max':
             output = nn.MaxPool2d(output.size(2))(output)
-        output = output.view(output.size(0), -1)
         return output
 
     def forward(self, input1, input2):
-        output1 = self.forward_once(input1)
-        output2 = self.forward_once(input2)
-        output = torch.cat((output1, output2), dim=1)
+        feature1 = self.forward_once(input1)
+        feature2 = self.forward_once(input2)
+        output = torch.cat((feature1, feature2), dim=1)
         output = self.fc(output)
-        return output
+        return feature1, feature2, output
 
-    def get_feature(self, x):
-        output = self.base.forward(x)
-        if self.cnn:
-            output = self.cnn(output)
-        if self.pooling == 'avg':
-            output = nn.AvgPool2d(output.size(2))(output)
-        elif self.pooling == 'max':
-            output = nn.MaxPool2d(output.size(2))(output)
-        return output
-
-    def init_weights(self, state_dict):
-        # only base needs pretrained weights
-        self.base.init_weights(state_dict)
+    def load_pretrained(self, state_dict):
+        # used when loading pretrained base model
+        # warning: self.cnn and self.fc won't be initialized
+        self.base.load_pretrained(state_dict)
 
 
-class SiameseFeatures(nn.Module):
-    def __init__(self, num_classes=3, base=None, pooling='avg', dropout=0.5, fc_dim=64, cnn_dim=[]):
-        super(SiameseFeatures, self).__init__()
+class SiameseFeature(nn.Module):
+    def __init__(self, base=None, pooling='avg', cnn_dim=[], cnn_pad=1, cnn_relu_slope=0.2):
+        super(SiameseFeature, self).__init__()
         self.pooling = pooling
-        if pooling:
-            fw = 1
-        else:
-            fw = 6
         self.base = base
         if cnn_dim:
-            cnns = []
+            conv_block = []
             nf_prev = base.feature_dim
             for i in range(len(cnn_dim) - 1):
                 nf = cnn_dim[i]
-                cnns += [
-                    nn.Conv2d(nf_prev, nf, kernel_size=3, stride=1, padding=1, bias=True),
+                conv_block += [
+                    nn.Conv2d(nf_prev, nf, kernel_size=3, stride=1, padding=cnn_pad, bias=True),
                     nn.BatchNorm2d(nf),
-                    nn.ReLU(True)
+                    nn.LeakyReLU(cnn_relu_slope)
                 ]
                 nf_prev = nf
-            nf = cnn_dim[-1]
-            cnns += [nn.Conv2d(nf_prev, nf, kernel_size=3, stride=1, padding=1, bias=True)]
-            base.feature_dim = nf
-            self.cnn = nn.Sequential(*cnns)
+            conv_block += [nn.Conv2d(nf_prev, cnn_dim[-1], kernel_size=3, stride=1, padding=cnn_pad, bias=True)]
+            self.cnn = nn.Sequential(*conv_block)
+            feature_dim = cnn_dim[-1]
         else:
             self.cnn = None
-        self.feature_dim = base.feature_dim
+            feature_dim = base.feature_dim
+        self.feature_dim = feature_dim
 
     def forward(self, x):
         output = self.base.forward(x)
@@ -549,13 +582,9 @@ class SiameseFeatures(nn.Module):
             output = nn.MaxPool2d(output.size(2))(output)
         return output
 
-    def init_weights(self, state_dict):
-        # only base needs pretrained weights
-        self.base.init_weights(state_dict)
-
 
 class AlexNet(nn.Module):
-    def __init__(self, num_classes=1000, dropout=0.5):
+    def __init__(self, num_classes=1000):
         super(AlexNet, self).__init__()
         self.features = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
@@ -573,10 +602,10 @@ class AlexNet(nn.Module):
             nn.MaxPool2d(kernel_size=3, stride=2),
         )
         self.classifier = nn.Sequential(
-            nn.Dropout(dropout),
+            nn.Dropout(),
             nn.Linear(256 * 6 * 6, 4096),
             nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
+            nn.Dropout(),
             nn.Linear(4096, 4096),
             nn.ReLU(inplace=True),
             nn.Linear(4096, num_classes),
@@ -588,7 +617,7 @@ class AlexNet(nn.Module):
         x = self.classifier(x)
         return x
 
-    def init_weights(self, state_dict):
+    def load_pretrained(self, state_dict):
         if isinstance(state_dict, str):
             state_dict = torch.load(state_dict)
         if 'classifier.6.weight' in state_dict:
@@ -597,15 +626,17 @@ class AlexNet(nn.Module):
             del state_dict['classifier.6.bias']
         self.load_state_dict(state_dict, strict=False)
 
+    def get_finetune_parameters(self):
+        # used when opt.finetune_fc_only is True
+        return self.classifier.parameters()
 
+
+# a lighter alexnet, with fewer params in fc layers
 class AlexNetLite(nn.Module):
     def __init__(self, num_classes=10, pooling='avg', dropout=0.5):
         super(AlexNetLite, self).__init__()
         self.pooling = pooling
-        if pooling:
-            fw = 1
-        else:
-            fw = 6
+        fw = 1 if pooling else 6
         self.features = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
             nn.ReLU(inplace=True),
@@ -632,23 +663,28 @@ class AlexNetLite(nn.Module):
     def forward(self, x):
         x = self.features(x)
         if self.pooling == 'avg':
-            x = nn.AvgPool2d(6)(x)
+            x = nn.AvgPool2d(x.size(2))(x)
         elif self.pooling == 'max':
-            x = nn.MaxPool2d(6)(x)
+            x = nn.MaxPool2d(x.size(2))(x)
         x = x.view(x.size(0), -1)
         x = self.fc(x)
         return x
 
-    def init_weights(self, state_dict):
+    def load_pretrained(self, state_dict):
         if isinstance(state_dict, str):
             state_dict = torch.load(state_dict)
         # do not use self.features.load_state_dict() which will load nothing
         self.load_state_dict(state_dict, strict=False)
 
+    def get_finetune_parameters(self):
+        # used when opt.finetune_fc_only is True
+        return self.fc.parameters()
 
-class AlexNetFeatures(nn.Module):
-    def __init__(self, pooling='avg'):
-        super(AlexNetFeatures, self).__init__()
+
+class AlexNetFeature(nn.Module):
+    def __init__(self, pooling='max'):
+        super(AlexNetFeature, self).__init__()
+        self.pooling = pooling
         sequence = [
             nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
             nn.ReLU(inplace=True),
@@ -664,18 +700,18 @@ class AlexNetFeatures(nn.Module):
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2),
         ]
-        if pooling == 'avg':
-            sequence += [nn.AvgPool2d(kernel_size=6)]
-        elif pooling == 'max':
-            sequence += [nn.MaxPool2d(kernel_size=6)]
         self.features = nn.Sequential(*sequence)
         self.feature_dim = 256
 
     def forward(self, x):
         x = self.features(x)
+        if self.pooling == 'avg':
+            x = nn.AvgPool2d(x.size(2))(x)
+        elif self.pooling == 'max':
+            x = nn.MaxPool2d(x.size(2))(x)
         return x
 
-    def init_weights(self, state_dict):
+    def load_pretrained(self, state_dict):
         if isinstance(state_dict, str):
             state_dict = torch.load(state_dict)
         self.load_state_dict(state_dict, strict=False)
@@ -710,7 +746,7 @@ class ResNet(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-    def init_weights(self, state_dict):
+    def load_pretrained(self, state_dict):
         if isinstance(state_dict, str):
             state_dict = torch.load(state_dict)
             if 'fc.weight' in state_dict:
@@ -720,9 +756,9 @@ class ResNet(nn.Module):
         self.model.load_state_dict(state_dict, strict=False)
 
 
-class ResNetFeatures(nn.Module):
+class ResNetFeature(nn.Module):
     def __init__(self, which_model):
-        super(ResNetFeatures, self).__init__()
+        super(ResNetFeature, self).__init__()
         model = None
         feature_dim = None
         if which_model == 'resnet18':
@@ -741,6 +777,11 @@ class ResNetFeatures(nn.Module):
             from torchvision.models import resnet101
             model = resnet101(False)
             feature_dim = 512 * 4
+        elif which_model == 'resnet152':
+            from torchvision.models import resnet152
+            model = resnet152(False)
+            feature_dim = 512 * 4
+        delattr(model, 'fc')
         self.model = model
         self.feature_dim = feature_dim
 
@@ -757,11 +798,25 @@ class ResNetFeatures(nn.Module):
 
         return x
 
-    def init_weights(self, state_dict):
+    def load_pretrained(self, state_dict):
         if isinstance(state_dict, str):
             state_dict = torch.load(state_dict)
-            if 'fc.weight' in state_dict:
-                del state_dict['fc.weight']
-            if 'fc.bias' in state_dict:
-                del state_dict['fc.bias']
         self.model.load_state_dict(state_dict, strict=False)
+
+
+###############################################################################
+# Utils
+###############################################################################
+class Normalize(nn.Module):
+    def __init__(self, mean=[], std=[]):
+        super(Normalize, self).__init__()
+        self.nc = len(mean)
+        # FIXME: hard coded cuda()
+        self.register_buffer('mean', torch.Tensor(np.array(mean).reshape([1, self.nc, 1, 1])).cuda())
+        self.register_buffer('std', torch.Tensor(np.array(std).reshape([1, self.nc, 1, 1])).cuda())
+        # FIXME: adjust here
+        self.mean = 2 * self.mean - 1
+        self.std = 2 * self.std
+
+    def __call__(self, input):
+        return (input - self.mean.expand_as(input)) / self.std.expand_as(input)
