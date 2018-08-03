@@ -12,6 +12,7 @@ def tensor2im(input_image, imtype=np.uint8):
         image_tensor = input_image.data
     else:
         return input_image
+    # only return the first image in a given batch
     image_numpy = image_tensor[0].cpu().float().numpy()
     if image_numpy.shape[0] == 1:
         image_numpy = np.tile(image_numpy, (3, 1, 1))
@@ -60,9 +61,14 @@ def mkdir(path):
         os.makedirs(path)
 
 
-def parse_age_label(fname, binranges):
+def parse_age(fname):
     strlist = fname.split('_')
     age = int(strlist[0])
+    return age
+
+
+def parse_age_label(fname, binranges):
+    age = parse_age(fname)
     l = None
     for l in range(len(binranges)-1):
         if (age >= binranges[l]) and (age < binranges[l+1]):

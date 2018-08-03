@@ -1,7 +1,7 @@
 import os.path
 from data.base_dataset import BaseDataset, get_transform
 from data.image_folder import make_dataset, make_dataset_with_filenames
-from util.util import parse_age_label
+from util.util import parse_age_label, parse_age
 from PIL import Image
 import random
 
@@ -35,12 +35,15 @@ class FaceAgingDataset(BaseDataset):
 
     def parse_paths(self):
         ageList = [[] for _ in range(self.num_classes)]  # list of list, the outer list is indexed by age label
+        ages = []
         for (id, fname) in enumerate(self.fnames, 0):
             L = parse_age_label(fname, self.age_bins_with_inf)
             ageList[L].append(id)
+            ages.append(parse_age(fname))
         maxLen = max([len(ls) for ls in ageList])
         self.ageList = ageList
         self.size = maxLen
+        self.ages = ages
 
     def __getitem__(self, index):
         ret_dict = {}

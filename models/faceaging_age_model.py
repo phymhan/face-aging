@@ -8,11 +8,13 @@ import random
 import numpy as np
 from collections import OrderedDict
 
+from util.util import parse_age_label
+
 
 # TODO: set random seed
-class FaceAgingEmbeddingModel(BaseModel):
+class FaceAgingAgeModel(BaseModel):
     def name(self):
-        return 'FaceAgingEmbeddingModel'
+        return 'FaceAgingAgeModel'
 
     @staticmethod
     def modify_commandline_options(parser, is_train=True):
@@ -54,16 +56,18 @@ class FaceAgingEmbeddingModel(BaseModel):
     def initialize(self, opt):
         BaseModel.initialize(self, opt)
         assert(opt.input_nc == opt.output_nc)
+        assert(opt.embedding_nc == 1)
         self.opt.num_classes = len(opt.age_binranges)
         self.isTrain = opt.isTrain
         # specify the training losses you want to print out. The program will call base_model.get_current_losses
-        self.loss_names = ['G_GAN', 'G_IP', 'G_L1', 'z_rec', 'D_real_right', 'D_real_wrong', 'D_fake']
+        self.loss_names = ['G_GAN', 'G_IP', 'G_L1', 'D_real_right', 'D_real_wrong', 'D_fake']
         # specify the images you want to save/display. The program will call base_model.get_current_visuals
         self.visual_names = ['real_A', 'fake_B', 'real_B']
+        # FIXME: disable E/AC for now
         if self.isTrain:
-            self.model_names = ['G', 'D', 'E']
+            self.model_names = ['G', 'D']
         else:  # during test time, only load Gs
-            self.model_names = ['G', 'E']
+            self.model_names = ['G']
         # load/define networks
         self.netG = networks.define_G(opt.input_nc + opt.embedding_nc, opt.output_nc, opt.ngf,
                                       opt.which_model_netG, opt.norm_G, not opt.no_dropout, opt.init_type, self.gpu_ids)
@@ -79,11 +83,6 @@ class FaceAgingEmbeddingModel(BaseModel):
                 self.netIP.module.load_pretrained(opt.pretrained_model_path_IP)
             else:
                 self.netIP.load_pretrained(opt.pretrained_model_path_IP)
-            # define netE, which is part of a Siamese network (SiameseFeature)
-            self.netE = networks.define_E(opt.which_model_netE, 3, init_type=opt.init_type, pooling=opt.pooling_E,
-                                          cnn_dim=opt.cnn_dim_E, cnn_pad=opt.cnn_pad_E,
-                                          cnn_relu_slope=opt.cnn_relu_slope_E, gpu_ids=self.gpu_ids)
-            self.netE.module.load_state_dict(torch.load(opt.pretrained_model_path_E, map_location=str(self.device)), strict=False)  # TODO: map_location
 
         if self.isTrain:
             # TODO: use num_classes pools
@@ -109,27 +108,22 @@ class FaceAgingEmbeddingModel(BaseModel):
             self.optimizers.append(self.optimizer_D)
             # self.optimizers.append(self.optimizer_E)
 
+        # FIXME: I cannot find a solution that performs channel-wise normalization without breaking autograd for now
         self.embedding_mean = opt.embedding_mean
         self.embedding_std = opt.embedding_std
-        # self.embedding_normalize = lambda x: (x - opt.embedding_mean[0]) / opt.embedding_std[0]
-        self.embedding_normalize = networks.Normalize(opt.embedding_mean, opt.embedding_std)
+        self.embedding_normalize = lambda x: x / 100
+        # self.embedding_normalize = networks.Normalize(opt.embedding_mean, opt.embedding_std)
 
-        if self.isTrain and opt.display_aging_visuals and opt.aging_visual_embedding_path:
-            self.pre_generate_embeddings(opt.aging_visual_embedding_path)
+        if self.isTrain and opt.display_aging_visuals:
+            self.pre_generate_embeddings()
 
         if self.isTrain:
             # self.transform_IP = lambda x: x
             self.transform_IP = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
-        # self.transform_E = lambda x: x
-        self.transform_E = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
 
-        # FIXME: set_requires_grad False, fix me if updating E, see BicycleGAN
-        self.set_requires_grad(self.netE, False)
-
-    def pre_generate_embeddings(self, npy_file_path):
+    def pre_generate_embeddings(self):
         fixed_embeddings = []
-        # embeddings should be list of 4-D tensors/arrays (or a 5-D tensor/array)
-        embeddings_npy = np.load(npy_file_path)
+        embeddings_npy = np.array(self.opt.age_binranges).reshape(self.opt.num_classes, 1, 1, 1, 1)
         for L in range(embeddings_npy.shape[0]):
             fixed_embeddings.append(self.embedding_normalize(torch.Tensor(embeddings_npy[L]).to(self.device)))
         self.fixed_embeddings = fixed_embeddings
@@ -139,31 +133,31 @@ class FaceAgingEmbeddingModel(BaseModel):
         self.real_A = input['A'].to(self.device)
         self.real_B = input['B'].to(self.device)
         self.real_A_IP = upsample2d(self.real_A, self.opt.fineSize_IP)
-        self.real_A_E = upsample2d(self.real_A, self.opt.fineSize_E)
-        self.real_B_E = upsample2d(self.real_B, self.opt.fineSize_E)
-        self.label_AB = input['label']  # relation between real_A and real_B
-        if self.opt.display_aging_visuals and self.opt.dataset_mode == 'faceaging_embedding_vis':
-            self.aging_visuals_src = [input[L].to(self.device) for L in range(self.opt.num_classes)]
+        # self.real_A_E = upsample2d(self.real_A, self.opt.fineSize_E)
+        # self.real_B_E = upsample2d(self.real_B, self.opt.fineSize_E)
+        self.label_A = input['A_label'].to(self.device)
+        self.label_B = input['B_label'].to(self.device)
+        self.label_AB = input['label']
         self.image_paths = input['B_paths']
         self.current_iter += 1
 
     def forward(self):
         # FIXME: embeddings detached here, fix me if updating E, see BicycleGAN
-        self.embedding_A = self.embedding_normalize(self.netE(self.transform_E(self.real_A_E)).detach())
-        self.embedding_B = self.embedding_normalize(self.netE(self.transform_E(self.real_B_E)).detach())
+        self.embedding_A = self.embedding_normalize(self.label_A)
+        self.embedding_B = self.embedding_normalize(self.label_B)
+        # self.embedding_A += torch.randn(self.embedding_A.size()).to(self.device) * 0.1
+        # self.embedding_B += torch.randn(self.embedding_B.size()).to(self.device) * 0.1
         self.fake_B = self.netG(torch.cat((self.real_A, expand2d(self.embedding_B, self.opt.fineSize)), 1))
         self.fake_B_IP = upsample2d(self.fake_B, self.opt.fineSize_IP)
-        self.fake_B_E = upsample2d(self.fake_B, self.opt.fineSize_E)
         # if self.opt.display_aging_visuals:
         #     aging_visuals = {}
         #     for L in range(self.opt.num_classes):
-        #         if self.opt.dataset_mode == 'faceaging_embedding_vis':
-        #             img = upsample2d(self.aging_visuals_src[L], self.opt.fineSize_E)
-        #             embedding = self.embedding_normalize(self.netE(self.transform_E(img)))
-        #         else:
-        #             embedding = self.fixed_embeddings[L]
+        #         embedding = self.fixed_embeddings[L]
         #         aging_visuals[L] = self.netG(torch.cat((self.real_A, expand2d_as(embedding, self.real_A)), 1))
         #     self.aging_visuals = aging_visuals
+
+        # self.fixed_embeddings[0] = self.embedding_B
+        # self.fixed_embeddings[4] = self.embedding_A
 
     def backward_D(self):
         # Fake image with label_B
@@ -216,13 +210,14 @@ class FaceAgingEmbeddingModel(BaseModel):
         feature_A.requires_grad = False
         self.loss_G_IP = self.criterionIP(self.netIP(self.transform_IP(self.fake_B_IP)), feature_A) * self.opt.lambda_IP
 
-        # Embedding reconstruction loss
-        pred_embedding = self.embedding_normalize(self.netE(self.transform_E(self.fake_B_E)))
-        # print('realA: %.3f, realB: %.3f, fakeB: %.3f' % (self.embedding_A[0,0,0,0], self.embedding_B[0,0,0,0], pred_embedding[0,0,0,0]))  # debug
-        self.loss_z_rec = self.criterionRec(pred_embedding, self.embedding_B.detach()) * self.opt.lambda_E
+        # FIXME: no AC/E for now
+        # # Embedding reconstruction loss
+        # pred_embedding = self.embedding_normalize(self.netE(self.transform_E(self.fake_B_E)))
+        # # print('realA: %.3f, realB: %.3f, fakeB: %.3f' % (self.embedding_A[0,0,0,0], self.embedding_B[0,0,0,0], pred_embedding[0,0,0,0]))  # debug
+        # self.loss_z_rec = self.criterionRec(pred_embedding, self.embedding_B) * self.opt.lambda_E
 
         # Combined loss
-        self.loss_G = self.loss_G_GAN + self.loss_G_IP + self.loss_G_L1 + self.loss_z_rec
+        self.loss_G = self.loss_G_GAN + self.loss_G_IP + self.loss_G_L1  # + self.loss_z_rec
 
         self.loss_G.backward()
 
@@ -245,22 +240,27 @@ class FaceAgingEmbeddingModel(BaseModel):
 
     def get_current_visuals(self):
         self.set_requires_grad(self.netG, False)
-        # self.set_requires_grad(self.netE, False)
         visual_ret = OrderedDict()
         for name in self.visual_names:
             if isinstance(name, str):
                 visual_ret[name] = getattr(self, name)
+        print('-' * 100)
         if self.opt.display_aging_visuals:
             aging_visuals = {}
+
+            # self.fixed_embeddings = torch.rand(5, 1, 1, 1, 1).cuda()
+
             for L in range(self.opt.num_classes):
-                if self.opt.dataset_mode == 'faceaging_embedding_vis':
-                    img = upsample2d(self.aging_visuals_src[L], self.opt.fineSize_E)
-                    embedding = self.embedding_normalize(self.netE(self.transform_E(img)))
-                else:
-                    embedding = self.fixed_embeddings[L]
-                aging_visuals[L] = self.netG(torch.cat((self.real_A, expand2d_as(embedding, self.real_A)), 1))
+                embedding = self.fixed_embeddings[L]
+                # embedding = self.fixed_embeddings[L] - 1/100
+                print(embedding.data.cpu().numpy().squeeze())
+                aging_visuals[L] = self.netG(torch.cat((self.real_A[0:1, ...], expand2d_as(embedding, self.real_A[0:1, ...])), 1))
             for L in range(self.opt.num_classes):
                 visual_ret['age_'+str(L)] = aging_visuals[L]
         self.set_requires_grad(self.netG, True)
-        # self.set_requires_grad(self.netE, True)
+        # print('-' * 100)
+        print(self.embedding_B.data.cpu().numpy()[0, 0, 0, 0])
+        # print([em.data.cpu().numpy().squeeze() for em in self.fixed_embeddings])
+        # print(expand2d_as(embedding, self.real_A[0:1, ...]))
+        print('-' * 100)
         return visual_ret

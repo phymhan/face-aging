@@ -40,6 +40,7 @@ class FaceAgingModel(BaseModel):
             parser.add_argument('--display_aging_visuals', action='store_true', help='display aging visuals if True')
             parser.add_argument('--lr_AC', type=float, default=0.0002, help='learning rate for AC')
             parser.add_argument('--no_AC_on_fake', action='store_true', help='do *not* train AC on fake images')
+            parser.add_argument('--no_trick', action='store_true')
 
         return parser
 
@@ -165,16 +166,16 @@ class FaceAgingModel(BaseModel):
         self.current_iter += 1
 
     def forward(self):
-        self.fake_B = self.netG(torch.cat((self.real_A, self.batch_one_hot_labels[self.label_B][0:self.real_A.size(0),...]), 1))
+        self.fake_B = self.netG(torch.cat((self.real_A, self.batch_one_hot_labels[self.label_B][0:self.real_A.size(0), ...]), 1))
         self.fake_B_IP = upsample2d(self.fake_B, self.opt.fineSize_IP)
         self.fake_B_AC = upsample2d(self.fake_B, self.opt.fineSize_AC)
-        if self.opt.display_aging_visuals:
-            self.aging_visuals = {L: self.netG(torch.cat((self.real_A, self.batch_one_hot_labels[L][0:self.real_A.size(0),...]), 1)) for L in range(self.opt.num_classes)}
+        # if self.opt.display_aging_visuals:
+        #     self.aging_visuals = {L: self.netG(torch.cat((self.real_A, self.batch_one_hot_labels[L][0:self.real_A.size(0), ...]), 1)) for L in range(self.opt.num_classes)}
 
     def backward_D(self):
         # Fake image with label_B
         # stop backprop to the generator by detaching fake_B
-        fake_B = torch.cat((self.fake_B_pool[self.label_B].query(self.fake_B), self.batch_one_hot_labels[self.label_B][0:self.real_A.size(0),...]), 1)
+        fake_B = torch.cat((self.fake_B_pool[self.label_B].query(self.fake_B), self.batch_one_hot_labels[self.label_B][0:self.real_A.size(0), ...]), 1)
         pred_fake = self.netD(fake_B.detach())
         self.loss_D_fake = self.criterionGAN(pred_fake, False)
 
@@ -183,25 +184,29 @@ class FaceAgingModel(BaseModel):
         pred_real = self.netD(real_B_right)
         self.loss_D_real_right = self.criterionGAN(pred_real, True)
 
-        # Real image with label_B_not
-        real_B_wrong = torch.cat((self.real_B, self.batch_one_hot_labels[self.label_B_not][0:self.real_A.size(0), ...]), 1)
-        pred_real = self.netD(real_B_wrong)
-        self.loss_D_real_wrong = self.criterionGAN(pred_real, False)
+        if not self.opt.no_trick:
+            # Real image with label_B_not
+            real_B_wrong = torch.cat((self.real_B, self.batch_one_hot_labels[self.label_B_not][0:self.real_A.size(0), ...]), 1)
+            pred_real = self.netD(real_B_wrong)
+            self.loss_D_real_wrong = self.criterionGAN(pred_real, False)
 
-        # Combined loss
-        self.loss_D = (self.loss_D_fake + (self.loss_D_real_right + self.loss_D_real_wrong) * 0.5) * 0.5
+            # Combined loss
+            self.loss_D = (self.loss_D_fake + (self.loss_D_real_right + self.loss_D_real_wrong) * 0.5) * 0.5
+        else:
+            self.loss_D_real_wrong = 0
+            self.loss_D = (self.loss_D_fake + self.loss_D_real_right) * 0.5
 
         self.loss_D.backward()
 
     def backward_AC(self):
         # Real
         pred = self.netAC(self.transform_AC(self.real_B_AC))
-        self.loss_AC_real = self.criterionAC(pred, self.batch_labels[self.label_B][0:self.real_A.size(0),...])
+        self.loss_AC_real = self.criterionAC(pred, self.batch_labels[self.label_B][0:self.real_A.size(0), ...])
 
         # Fake
         if not self.opt.no_AC_on_fake:
             pred = self.netAC(self.transform_AC(self.fake_B_AC.detach()))
-            self.loss_AC_fake = self.criterionAC(pred, self.batch_labels[self.label_B][0:self.real_A.size(0),...])
+            self.loss_AC_fake = self.criterionAC(pred, self.batch_labels[self.label_B][0:self.real_A.size(0), ...])
         else:
             self.loss_AC_fake = 0.0
 
@@ -211,7 +216,7 @@ class FaceAgingModel(BaseModel):
 
     def backward_G(self):
         # First, G(A) should fake the discriminator
-        fake_B = torch.cat((self.fake_B, self.batch_one_hot_labels[self.label_B][0:self.real_A.size(0),...]), 1)
+        fake_B = torch.cat((self.fake_B, self.batch_one_hot_labels[self.label_B][0:self.real_A.size(0), ...]), 1)
         pred_fake = self.netD(fake_B)
         self.loss_G_GAN = self.criterionGAN(pred_fake, True)
 
@@ -228,7 +233,7 @@ class FaceAgingModel(BaseModel):
 
         # AC loss
         pred_fake = self.netAC(self.transform_AC(self.fake_B_AC))
-        self.loss_G_AC = self.criterionAC(pred_fake, self.batch_labels[self.label_B][0:self.real_A.size(0),...]) * self.opt.lambda_AC
+        self.loss_G_AC = self.criterionAC(pred_fake, self.batch_labels[self.label_B][0:self.real_A.size(0), ...]) * self.opt.lambda_AC
 
         self.loss_G = self.loss_G_GAN + self.loss_G_IP + self.loss_G_L1 + self.loss_G_AC
 
@@ -255,11 +260,14 @@ class FaceAgingModel(BaseModel):
         self.optimizer_G.step()
 
     def get_current_visuals(self):
+        self.set_requires_grad(self.netG, False)
         visual_ret = OrderedDict()
         for name in self.visual_names:
             if isinstance(name, str):
                 visual_ret[name] = getattr(self, name)
         if self.opt.display_aging_visuals:
+            aging_visuals = {L: self.netG(torch.cat((self.real_A, self.batch_one_hot_labels[L][0:self.real_A.size(0), ...]), 1)) for L in range(self.opt.num_classes)}
             for L in range(self.opt.num_classes):
-                visual_ret['age_'+str(L)] = self.aging_visuals[L]
+                visual_ret['age_'+str(L)] = aging_visuals[L]
+        self.set_requires_grad(self.netG, True)
         return visual_ret
