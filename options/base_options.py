@@ -44,7 +44,14 @@ class BaseOptions():
         parser.add_argument('--init_type', type=str, default='normal', help='network initialization [normal|xavier|kaiming|orthogonal]')
         parser.add_argument('--verbose', action='store_true', help='if specified, print more debugging information')
         parser.add_argument('--suffix', default='', type=str, help='customized suffix: opt.name = opt.name + suffix: e.g., {model}_{which_model_netG}_size{loadSize}')
-        parser.add_argument('--age_binranges', nargs='+', default=[1, 11, 21, 31, 41, 51, 61, 71, 81, 91], help='list of bins, the (i+1)-th group is in the range [age_binranges[i], age_binranges[i+1]), e.g. [1, 11, 21, ..., 101], the 1-st group is [1, 10], the 9-th [91, 100], however, the 10-th [101, +inf)')
+        parser.add_argument('--age_binranges', nargs='+', default=[1, 11, 21, 31, 41, 51, 61, 71, 81, 91],
+                            help='list of bins, the (i+1)-th group is in the range [age_binranges[i], age_binranges[i+1]), e.g. [1, 11, 21, ..., 101], the 1-st group is [1, 10], the 9-th [91, 100], however, the 10-th [101, +inf)')
+        # if use_add is True
+        parser.add_argument('--use_add', action='store_true', help='if True, use \'add input\' and \'add all\' models from BicycleGAN, else directly concated image and embedding')
+        parser.add_argument('--nl', type=str, default='relu', help='non-linearity activation: relu | lrelu | elu')
+        parser.add_argument('--upsample', type=str, default='basic', help='basic | bilinear')
+        parser.add_argument('--where_add', type=str, default='all', help='input|all|middle; where to add z in the network G')
+        parser.add_argument('--use_dropout', action='store_true', help='use dropout for the generator')
         self.initialized = True
         return parser
 

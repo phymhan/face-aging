@@ -5,6 +5,7 @@ import time
 from . import util
 from . import html
 from scipy.misc import imresize
+import scipy.io as sio
 
 
 # save image to the disk
@@ -149,6 +150,7 @@ class Visualizer():
                     'xlabel': 'epoch',
                     'ylabel': 'loss'},
                 win=self.display_id)
+            sio.savemat(os.path.join(self.web_dir, 'plot_data_id%d' % self.display_id), self.plot_data)
         except ConnectionError:
             self.throw_visdom_connection_error()
 

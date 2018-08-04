@@ -90,4 +90,5 @@ def expand2d(inputTensor, targetSize):
 
 
 def expand2d_as(inputTensor, targetTensor):
+    # expand a 4d tensor along axis 0, 2 and 3 to those of targetTensor
     return inputTensor.expand(targetTensor.size(0), inputTensor.size(1), targetTensor.size(2), targetTensor.size(3))

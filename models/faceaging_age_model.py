@@ -69,8 +69,14 @@ class FaceAgingAgeModel(BaseModel):
         else:  # during test time, only load Gs
             self.model_names = ['G']
         # load/define networks
-        self.netG = networks.define_G(opt.input_nc + opt.embedding_nc, opt.output_nc, opt.ngf,
-                                      opt.which_model_netG, opt.norm_G, not opt.no_dropout, opt.init_type, self.gpu_ids)
+        if self.use_add:
+            self.netG = networks.define_G_add(opt.input_nc, opt.output_nc, opt.embedding_nc, opt.ngf,
+                                              which_model_netG=opt.which_model_netG,
+                                              norm=opt.norm, nl=opt.nl, use_dropout=opt.use_dropout, init_type=opt.init_type,
+                                              gpu_ids=self.gpu_ids, where_add=self.opt.where_add, upsample=opt.upsample)
+        else:
+            self.netG = networks.define_G(opt.input_nc + opt.embedding_nc, opt.output_nc, opt.ngf,
+                                          opt.which_model_netG, opt.norm_G, not opt.no_dropout, opt.init_type, self.gpu_ids)
 
         if self.isTrain:
             use_sigmoid = opt.no_lsgan
@@ -89,7 +95,7 @@ class FaceAgingAgeModel(BaseModel):
             assert(opt.pool_size == 0)
             self.fake_B_pool = [ImagePool(opt.pool_size) for _ in range(self.opt.num_classes)]
             # define loss functions
-            self.criterionGAN = networks.GANLoss2(use_lsgan=not opt.no_lsgan).to(self.device)
+            self.criterionGAN = networks.GANLoss2(use_lsgan=not opt.no_lsgan).to(self.device)  # GANLoss2
             self.criterionL1 = torch.nn.L1Loss()
             self.criterionIP = torch.nn.MSELoss()
             if opt.embedding_reconstruction_criterion.lower() == 'mse':
@@ -108,18 +114,15 @@ class FaceAgingAgeModel(BaseModel):
             self.optimizers.append(self.optimizer_D)
             # self.optimizers.append(self.optimizer_E)
 
-        # FIXME: I cannot find a solution that performs channel-wise normalization without breaking autograd for now
         self.embedding_mean = opt.embedding_mean
         self.embedding_std = opt.embedding_std
         self.embedding_normalize = lambda x: x / 100
-        # self.embedding_normalize = networks.Normalize(opt.embedding_mean, opt.embedding_std)
 
         if self.isTrain and opt.display_aging_visuals:
             self.pre_generate_embeddings()
 
         if self.isTrain:
-            # self.transform_IP = lambda x: x
-            self.transform_IP = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+            self.transform_IP = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010), self.use_gpu)
 
     def pre_generate_embeddings(self):
         fixed_embeddings = []
@@ -129,7 +132,6 @@ class FaceAgingAgeModel(BaseModel):
         self.fixed_embeddings = fixed_embeddings
 
     def set_input(self, input):
-        # print(self.label_A, self.label_B, self.label_B_not)
         self.real_A = input['A'].to(self.device)
         self.real_B = input['B'].to(self.device)
         self.real_A_IP = upsample2d(self.real_A, self.opt.fineSize_IP)
@@ -140,24 +142,18 @@ class FaceAgingAgeModel(BaseModel):
         self.label_AB = input['label']
         self.image_paths = input['B_paths']
         self.current_iter += 1
+        self.current_batch_size = int(self.real_A.size(0))
 
     def forward(self):
         # FIXME: embeddings detached here, fix me if updating E, see BicycleGAN
         self.embedding_A = self.embedding_normalize(self.label_A)
         self.embedding_B = self.embedding_normalize(self.label_B)
-        # self.embedding_A += torch.randn(self.embedding_A.size()).to(self.device) * 0.1
-        # self.embedding_B += torch.randn(self.embedding_B.size()).to(self.device) * 0.1
-        self.fake_B = self.netG(torch.cat((self.real_A, expand2d(self.embedding_B, self.opt.fineSize)), 1))
-        self.fake_B_IP = upsample2d(self.fake_B, self.opt.fineSize_IP)
-        # if self.opt.display_aging_visuals:
-        #     aging_visuals = {}
-        #     for L in range(self.opt.num_classes):
-        #         embedding = self.fixed_embeddings[L]
-        #         aging_visuals[L] = self.netG(torch.cat((self.real_A, expand2d_as(embedding, self.real_A)), 1))
-        #     self.aging_visuals = aging_visuals
 
-        # self.fixed_embeddings[0] = self.embedding_B
-        # self.fixed_embeddings[4] = self.embedding_A
+        if self.use_add:
+            self.fake_B = self.netG(self.real_A, self.embedding_B)
+        else:
+            self.fake_B = self.netG(torch.cat((self.real_A, expand2d(self.embedding_B, self.opt.fineSize)), 1))
+        self.fake_B_IP = upsample2d(self.fake_B, self.opt.fineSize_IP)
 
     def backward_D(self):
         # Fake image with label_B
@@ -175,11 +171,9 @@ class FaceAgingAgeModel(BaseModel):
         self.loss_D_real_right = self.criterionGAN(pred_real, [1])
 
         if not self.opt.no_trick:
-            # TODO: is this trick necessary?
             # Real_B image with embedding_A
             real_B_embedding_A = torch.cat((self.real_B, expand2d(self.embedding_A, self.opt.fineSize)), 1)
             pred_real = self.netD(real_B_embedding_A)
-            # FIXME: only diff is allowed, or batchSize should be 1
             target_label = [1 if L == 1 else 0 for L in self.label_AB]
             self.loss_D_real_wrong = self.criterionGAN(pred_real, target_label)
             # self.loss_D_real_wrong = self.criterionGAN(pred_real, [0])
@@ -244,23 +238,15 @@ class FaceAgingAgeModel(BaseModel):
         for name in self.visual_names:
             if isinstance(name, str):
                 visual_ret[name] = getattr(self, name)
-        print('-' * 100)
         if self.opt.display_aging_visuals:
             aging_visuals = {}
-
-            # self.fixed_embeddings = torch.rand(5, 1, 1, 1, 1).cuda()
-
             for L in range(self.opt.num_classes):
                 embedding = self.fixed_embeddings[L]
-                # embedding = self.fixed_embeddings[L] - 1/100
-                print(embedding.data.cpu().numpy().squeeze())
-                aging_visuals[L] = self.netG(torch.cat((self.real_A[0:1, ...], expand2d_as(embedding, self.real_A[0:1, ...])), 1))
+                if self.use_add:
+                    aging_visuals[L] = self.netG(self.real_A[0:1, ...], embedding)
+                else:
+                    aging_visuals[L] = self.netG(torch.cat((self.real_A[0:1, ...], expand2d_as(embedding, self.real_A[0:1, ...])), 1))
             for L in range(self.opt.num_classes):
                 visual_ret['age_'+str(L)] = aging_visuals[L]
         self.set_requires_grad(self.netG, True)
-        # print('-' * 100)
-        print(self.embedding_B.data.cpu().numpy()[0, 0, 0, 0])
-        # print([em.data.cpu().numpy().squeeze() for em in self.fixed_embeddings])
-        # print(expand2d_as(embedding, self.real_A[0:1, ...]))
-        print('-' * 100)
         return visual_ret

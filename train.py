@@ -26,10 +26,10 @@ if __name__ == '__main__':
             if total_steps % opt.print_freq == 0:
                 t_data = iter_start_time - iter_data_time
             visualizer.reset()
-            total_steps += opt.batchSize
-            epoch_iter += opt.batchSize
             model.set_input(data)
             model.optimize_parameters()
+            total_steps += model.current_batch_size
+            epoch_iter += model.current_batch_size
 
             if total_steps % opt.display_freq == 0:
                 save_result = total_steps % opt.update_html_freq == 0

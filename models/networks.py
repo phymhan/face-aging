@@ -16,11 +16,25 @@ def get_norm_layer(norm_type='instance'):
         norm_layer = functools.partial(nn.BatchNorm2d, affine=True)
     elif norm_type == 'instance':
         norm_layer = functools.partial(nn.InstanceNorm2d, affine=False, track_running_stats=True)
+    elif norm_type == 'instance_affine':
+        norm_layer = functools.partial(nn.InstanceNorm2d, affine=True, track_running_stats=True)
     elif norm_type == 'none':
         norm_layer = None
     else:
         raise NotImplementedError('normalization layer [%s] is not found' % norm_type)
     return norm_layer
+
+
+def get_non_linearity(layer_type='relu'):
+    if layer_type == 'relu':
+        nl_layer = functools.partial(nn.ReLU, inplace=True)
+    elif layer_type == 'lrelu':
+        nl_layer = functools.partial(nn.LeakyReLU, negative_slope=0.2, inplace=True)
+    elif layer_type == 'elu':
+        nl_layer = functools.partial(nn.ELU, inplace=True)
+    else:
+        raise NotImplementedError('nonlinearity activitation [%s] is not found' % layer_type)
+    return nl_layer
 
 
 def get_scheduler(optimizer, opt):
@@ -83,6 +97,34 @@ def define_G(input_nc, output_nc, ngf, which_model_netG, norm='batch', use_dropo
         netG = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif which_model_netG == 'unet_256':
         netG = UnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
+    else:
+        raise NotImplementedError('Generator model name [%s] is not recognized' % which_model_netG)
+    return init_net(netG, init_type, gpu_ids)
+
+
+# define_G from BicycleGAN
+def define_G_add(input_nc, output_nc, nz, ngf, which_model_netG='unet_128', norm='batch', nl='relu',
+                 use_dropout=False, init_type='xavier', gpu_ids=[], where_add='input', upsample='bilinear'):
+    netG = None
+    norm_layer = get_norm_layer(norm_type=norm)
+    nl_layer = get_non_linearity(layer_type=nl)
+    # upsample = 'bilinear'
+
+    if nz == 0:
+        where_add = 'input'
+
+    if which_model_netG == 'unet_128' and where_add == 'input':
+        netG = G_Unet_add_input(input_nc, output_nc, nz, 7, ngf, norm_layer=norm_layer, nl_layer=nl_layer,
+                                use_dropout=use_dropout, gpu_ids=gpu_ids, upsample=upsample)
+    elif which_model_netG == 'unet_256' and where_add == 'input':
+        netG = G_Unet_add_input(input_nc, output_nc, nz, 8, ngf, norm_layer=norm_layer, nl_layer=nl_layer,
+                                use_dropout=use_dropout, gpu_ids=gpu_ids, upsample=upsample)
+    elif which_model_netG == 'unet_128' and where_add == 'all':
+        netG = G_Unet_add_all(input_nc, output_nc, nz, 7, ngf, norm_layer=norm_layer, nl_layer=nl_layer,
+                              use_dropout=use_dropout, gpu_ids=gpu_ids, upsample=upsample)
+    elif which_model_netG == 'unet_256' and where_add == 'all':
+        netG = G_Unet_add_all(input_nc, output_nc, nz, 8, ngf, norm_layer=norm_layer, nl_layer=nl_layer,
+                              use_dropout=use_dropout, gpu_ids=gpu_ids, upsample=upsample)
     else:
         raise NotImplementedError('Generator model name [%s] is not recognized' % which_model_netG)
     return init_net(netG, init_type, gpu_ids)
@@ -582,6 +624,16 @@ class SiameseFeature(nn.Module):
             output = nn.MaxPool2d(output.size(2))(output)
         return output
 
+    def load_pretrained(self, state_dict):
+        # load state dict from a SiameseNetwork
+        if isinstance(state_dict, str):
+            state_dict = torch.load(state_dict)
+        # remove cxn and fc
+        for key in list(state_dict.keys()):
+            if key.startswith('cxn') or key.startswith('fc'):
+                state_dict.pop(key)
+        self.load_state_dict(state_dict, strict=True)
+
 
 class AlexNet(nn.Module):
     def __init__(self, num_classes=1000):
@@ -620,15 +672,10 @@ class AlexNet(nn.Module):
     def load_pretrained(self, state_dict):
         if isinstance(state_dict, str):
             state_dict = torch.load(state_dict)
-        if 'classifier.6.weight' in state_dict:
-            del state_dict['classifier.6.weight']
-        if 'classifier.6.bias' in state_dict:
-            del state_dict['classifier.6.bias']
+        for key in list(state_dict.keys()):
+            if key.startswith('classifier.6'):
+                state_dict.pop(key)
         self.load_state_dict(state_dict, strict=False)
-
-    def get_finetune_parameters(self):
-        # used when opt.finetune_fc_only is True
-        return self.classifier.parameters()
 
 
 # a lighter alexnet, with fewer params in fc layers
@@ -673,12 +720,10 @@ class AlexNetLite(nn.Module):
     def load_pretrained(self, state_dict):
         if isinstance(state_dict, str):
             state_dict = torch.load(state_dict)
-        # do not use self.features.load_state_dict() which will load nothing
+        for key in list(state_dict.keys()):
+            if key.startswith('fc'):
+                state_dict.pop(key)
         self.load_state_dict(state_dict, strict=False)
-
-    def get_finetune_parameters(self):
-        # used when opt.finetune_fc_only is True
-        return self.fc.parameters()
 
 
 class AlexNetFeature(nn.Module):
@@ -712,6 +757,7 @@ class AlexNetFeature(nn.Module):
         return x
 
     def load_pretrained(self, state_dict):
+        # invoked when used as `base' in SiameseNetwork
         if isinstance(state_dict, str):
             state_dict = torch.load(state_dict)
         self.load_state_dict(state_dict, strict=False)
@@ -749,10 +795,9 @@ class ResNet(nn.Module):
     def load_pretrained(self, state_dict):
         if isinstance(state_dict, str):
             state_dict = torch.load(state_dict)
-            if 'fc.weight' in state_dict:
-                del state_dict['fc.weight']
-            if 'fc.bias' in state_dict:
-                del state_dict['fc.bias']
+        for key in list(state_dict.keys()):
+            if key.startswith('fc'):
+                state_dict.pop(key)
         self.model.load_state_dict(state_dict, strict=False)
 
 
@@ -805,18 +850,304 @@ class ResNetFeature(nn.Module):
 
 
 ###############################################################################
+# Unet from BicycleGAN
+###############################################################################
+# Defines the Unet generator.
+# |num_downs|: number of downsamplings in UNet. For example,
+# if |num_downs| == 7, image of size 128x128 will become of size 1x1
+# at the bottleneck
+class G_Unet_add_input(nn.Module):
+    def __init__(self, input_nc, output_nc, nz, num_downs, ngf=64,
+                 norm_layer=None, nl_layer=None, use_dropout=False,
+                 gpu_ids=[], upsample='basic'):
+        super(G_Unet_add_input, self).__init__()
+        self.gpu_ids = gpu_ids
+        self.nz = nz
+        # currently support only input_nc == output_nc
+        # assert(input_nc == output_nc)
+        max_nchn = 8
+        # construct unet structure
+        unet_block = UnetBlock(ngf*max_nchn, ngf * max_nchn, ngf * max_nchn,
+                               innermost=True, norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
+        for _ in range(num_downs - 5):
+            unet_block = UnetBlock(ngf*max_nchn, ngf * max_nchn, ngf * max_nchn, unet_block,
+                                   norm_layer=norm_layer, nl_layer=nl_layer, use_dropout=use_dropout, upsample=upsample)
+        unet_block = UnetBlock(ngf*4, ngf * 4, ngf * max_nchn, unet_block, norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
+        unet_block = UnetBlock(ngf*2, ngf * 2, ngf * 4, unet_block, norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
+        unet_block = UnetBlock(ngf, ngf, ngf * 2, unet_block, norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
+        unet_block = UnetBlock(input_nc+nz, output_nc, ngf, unet_block,
+                               outermost=True, norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
+        self.model = unet_block
+
+    def forward(self, x, z=None):
+        if self.nz > 0:
+            z_img = z.view(z.size(0), z.size(1), 1, 1).expand(z.size(0), z.size(1), x.size(2), x.size(3))
+            x_with_z = torch.cat([x, z_img], 1)
+        else:
+            x_with_z = x  # no z
+        return self.model(x_with_z)
+
+
+def upsampleLayer(inplanes, outplanes, upsample='basic', padding_type='zero'):
+    # padding_type = 'zero'
+    if upsample == 'basic':
+        upconv = [nn.ConvTranspose2d(inplanes, outplanes, kernel_size=4, stride=2, padding=1)]
+    elif upsample == 'bilinear':
+        upconv = [nn.Upsample(scale_factor=2, mode='bilinear'),
+                  nn.ReflectionPad2d(1),
+                  nn.Conv2d(inplanes, outplanes, kernel_size=3, stride=1, padding=0)]
+    else:
+        raise NotImplementedError('upsample layer [%s] not implemented' % upsample)
+    return upconv
+
+
+# Defines the submodule with skip connection.
+# X -------------------identity---------------------- X
+#   |-- downsampling -- |submodule| -- upsampling --|
+class UnetBlock(nn.Module):
+    def __init__(self, input_nc, outer_nc, inner_nc,
+                 submodule=None, outermost=False, innermost=False,
+                 norm_layer=None, nl_layer=None, use_dropout=False, upsample='basic', padding_type='zero'):
+        super(UnetBlock, self).__init__()
+        self.outermost = outermost
+        p = 0
+        downconv = []
+        if padding_type == 'reflect':
+            downconv += [nn.ReflectionPad2d(1)]
+        elif padding_type == 'replicate':
+            downconv += [nn.ReplicationPad2d(1)]
+        elif padding_type == 'zero':
+            p = 1
+        else:
+            raise NotImplementedError('padding [%s] is not implemented' % padding_type)
+        downconv += [nn.Conv2d(input_nc, inner_nc, kernel_size=4, stride=2, padding=p)]
+        downrelu = nn.LeakyReLU(0.2, True)  # downsample is different from upsample
+        downnorm = norm_layer(inner_nc) if norm_layer is not None else None
+        uprelu = nl_layer()
+        upnorm = norm_layer(outer_nc) if norm_layer is not None else None
+
+        if outermost:
+            upconv = upsampleLayer(inner_nc*2, outer_nc, upsample=upsample, padding_type=padding_type)
+            down = downconv
+            up = [uprelu] + upconv + [nn.Tanh()]
+            model = down + [submodule] + up
+        elif innermost:
+            upconv = upsampleLayer(inner_nc, outer_nc, upsample=upsample, padding_type=padding_type)
+            down = [downrelu] + downconv
+            up = [uprelu] + upconv
+            if upnorm is not None:
+                up += [upnorm]
+            model = down + up
+        else:
+            upconv = upsampleLayer(inner_nc*2, outer_nc, upsample=upsample, padding_type=padding_type)
+            down = [downrelu] + downconv
+            if downnorm is not None:
+                down += [downnorm]
+            up = [uprelu] + upconv
+            if upnorm is not None:
+                up += [upnorm]
+
+            if use_dropout:
+                model = down + [submodule] + up + [nn.Dropout(0.5)]
+            else:
+                model = down + [submodule] + up
+        self.model = nn.Sequential(*model)
+
+    def forward(self, x):
+        if self.outermost:
+            return self.model(x)
+        else:
+            return torch.cat([self.model(x), x], 1)
+
+
+def conv3x3(in_planes, out_planes):
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=1,
+                     padding=1, bias=True)
+
+
+# two usage cases, depend on kw and padw
+def upsampleConv(inplanes, outplanes, kw, padw):
+    sequence = []
+    sequence += [nn.Upsample(scale_factor=2, mode='nearest')]
+    sequence += [nn.Conv2d(inplanes, outplanes, kernel_size=kw, stride=1, padding=padw, bias=True)]
+    return nn.Sequential(*sequence)
+
+
+def meanpoolConv(inplanes, outplanes):
+    sequence = []
+    sequence += [nn.AvgPool2d(kernel_size=2, stride=2)]
+    sequence += [nn.Conv2d(inplanes, outplanes, kernel_size=1, stride=1, padding=0, bias=True)]
+    return nn.Sequential(*sequence)
+
+
+def convMeanpool(inplanes, outplanes):
+    sequence = []
+    sequence += [conv3x3(inplanes, outplanes)]
+    sequence += [nn.AvgPool2d(kernel_size=2, stride=2)]
+    return nn.Sequential(*sequence)
+
+
+class BasicBlockUp(nn.Module):
+    def __init__(self, inplanes, outplanes, norm_layer=None, nl_layer=None):
+        super(BasicBlockUp, self).__init__()
+        layers = []
+        if norm_layer is not None:
+            layers += [norm_layer(inplanes)]
+        layers += [nl_layer()]
+        layers += [upsampleConv(inplanes, outplanes, kw=3, padw=1)]
+        if norm_layer is not None:
+            layers += [norm_layer(outplanes)]
+        layers += [conv3x3(outplanes, outplanes)]
+        self.conv = nn.Sequential(*layers)
+        self.shortcut = upsampleConv(inplanes, outplanes, kw=1, padw=0)
+
+    def forward(self, x):
+        out = self.conv(x) + self.shortcut(x)
+        return out
+
+
+class BasicBlock(nn.Module):
+    def __init__(self, inplanes, outplanes, norm_layer=None, nl_layer=None):
+        super(BasicBlock, self).__init__()
+        layers = []
+        if norm_layer is not None:
+            layers += [norm_layer(inplanes)]
+        layers += [nl_layer()]
+        layers += [conv3x3(inplanes, inplanes)]
+        if norm_layer is not None:
+            layers += [norm_layer(inplanes)]
+        layers += [nl_layer()]
+        layers += [convMeanpool(inplanes, outplanes)]
+        self.conv = nn.Sequential(*layers)
+        self.shortcut = meanpoolConv(inplanes, outplanes)
+
+    def forward(self, x):
+        out = self.conv(x) + self.shortcut(x)
+        return out
+
+
+# Defines the Unet generator.
+# |num_downs|: number of downsamplings in UNet. For example,
+# if |num_downs| == 7, image of size 128x128 will become of size 1x1
+# at the bottleneck
+class G_Unet_add_all(nn.Module):
+    def __init__(self, input_nc, output_nc, nz, num_downs, ngf=64,
+                 norm_layer=None, nl_layer=None, use_dropout=False, gpu_ids=[], upsample='basic'):
+        super(G_Unet_add_all, self).__init__()
+        self.gpu_ids = gpu_ids
+        self.nz = nz
+        # construct unet structure
+        unet_block = UnetBlock_with_z(ngf*8, ngf * 8, ngf * 8, nz, None, innermost=True,
+                                      norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
+        unet_block = UnetBlock_with_z(ngf*8, ngf * 8, ngf * 8, nz, unet_block,
+                                      norm_layer=norm_layer, nl_layer=nl_layer, use_dropout=use_dropout, upsample=upsample)
+        for i in range(num_downs - 6):
+            unet_block = UnetBlock_with_z(ngf*8, ngf * 8, ngf * 8, nz, unet_block,
+                                          norm_layer=norm_layer, nl_layer=nl_layer, use_dropout=use_dropout, upsample=upsample)
+        unet_block = UnetBlock_with_z(ngf*4, ngf * 4, ngf * 8, nz, unet_block, norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
+        unet_block = UnetBlock_with_z(ngf*2, ngf * 2, ngf * 4, nz, unet_block, norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
+        unet_block = UnetBlock_with_z(ngf, ngf, ngf * 2, nz, unet_block, norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
+        unet_block = UnetBlock_with_z(input_nc, output_nc, ngf, nz, unet_block, outermost=True, norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
+        self.model = unet_block
+
+    def forward(self, x, z):
+        return self.model(x, z)
+
+
+class UnetBlock_with_z(nn.Module):
+    def __init__(self, input_nc, outer_nc, inner_nc, nz=0,
+                 submodule=None, outermost=False, innermost=False,
+                 norm_layer=None, nl_layer=None, use_dropout=False, upsample='basic', padding_type='zero'):
+        super(UnetBlock_with_z, self).__init__()
+        p = 0
+        downconv = []
+        if padding_type == 'reflect':
+            downconv += [nn.ReflectionPad2d(1)]
+        elif padding_type == 'replicate':
+            downconv += [nn.ReplicationPad2d(1)]
+        elif padding_type == 'zero':
+            p = 1
+        else:
+            raise NotImplementedError('padding [%s] is not implemented' % padding_type)
+
+        self.outermost = outermost
+        self.innermost = innermost
+        self.nz = nz
+        input_nc = input_nc + nz
+        downconv += [nn.Conv2d(input_nc, inner_nc, kernel_size=4, stride=2, padding=p)]
+        downrelu = nn.LeakyReLU(0.2, True)  # downsample is different from upsample
+        uprelu = nl_layer()
+
+        if outermost:
+            upconv = upsampleLayer(inner_nc*2, outer_nc, upsample=upsample, padding_type=padding_type)
+            down = downconv
+            up = [uprelu] + upconv + [nn.Tanh()]
+        elif innermost:
+            upconv = upsampleLayer(inner_nc, outer_nc, upsample=upsample, padding_type=padding_type)
+            down = [downrelu] + downconv
+            up = [uprelu] + upconv
+            if norm_layer is not None:
+                up += [norm_layer(outer_nc)]
+        else:
+            upconv = upsampleLayer(inner_nc*2, outer_nc, upsample=upsample, padding_type=padding_type)
+            down = [downrelu] + downconv
+            if norm_layer is not None:
+                down += [norm_layer(inner_nc)]
+            up = [uprelu] + upconv
+
+            if norm_layer is not None:
+                up += [norm_layer(outer_nc)]
+
+            if use_dropout:
+                up += [nn.Dropout(0.5)]
+        self.down = nn.Sequential(*down)
+        self.submodule = submodule
+        self.up = nn.Sequential(*up)
+
+    def forward(self, x, z):
+        if self.nz > 0:
+            z_img = z.view(z.size(0), z.size(1), 1, 1).expand(z.size(0), z.size(1), x.size(2), x.size(3))
+            x_and_z = torch.cat([x, z_img], 1)
+        else:
+            x_and_z = x
+
+        if self.outermost:
+            x1 = self.down(x_and_z)
+            x2 = self.submodule(x1, z)
+            return self.up(x2)
+        elif self.innermost:
+            x1 = self.up(self.down(x_and_z))
+            return torch.cat([x1, x], 1)
+        else:
+            x1 = self.down(x_and_z)
+            x2 = self.submodule(x1, z)
+            return torch.cat([self.up(x2), x], 1)
+
+
+###############################################################################
 # Utils
 ###############################################################################
+# Channel-wise normalization, similar to torchvision.transforms.Normalize but performed on a 4-D tensor
 class Normalize(nn.Module):
-    def __init__(self, mean=[], std=[]):
+    def __init__(self, mean=[], std=[], use_gpu=True):
         super(Normalize, self).__init__()
         self.nc = len(mean)
-        # FIXME: hard coded cuda()
-        self.register_buffer('mean', torch.Tensor(np.array(mean).reshape([1, self.nc, 1, 1])).cuda())
-        self.register_buffer('std', torch.Tensor(np.array(std).reshape([1, self.nc, 1, 1])).cuda())
-        # FIXME: adjust here
-        self.mean = 2 * self.mean - 1
-        self.std = 2 * self.std
+        self.use_gpu = use_gpu
+        self.identity_mapping = mean or std  # either one is empty
+        if not self.identity_mapping:
+            mean_tensor = torch.Tensor(np.array(mean).view([1, self.nc, 1, 1]))
+            std_tensor = torch.Tensor(np.array(std).view([1, self.nc, 1, 1]))
+            # mean and std adjusted here, since image is pre-normalized to [-1, 1] instead of [0, 1]
+            mean_tensor = 2 * mean_tensor - 1
+            std_tensor = 2 * std_tensor
+            if use_gpu:
+                mean_tensor = mean_tensor.cuda()
+                std_tensor = std_tensor.cuda()
+            self.register_buffer('mean', mean_tensor)
+            self.register_buffer('std', std_tensor)
 
     def __call__(self, input):
-        return (input - self.mean.expand_as(input)) / self.std.expand_as(input)
+        if self.identity_mapping:
+            return input
+        else:
+            return (input - self.mean.expand_as(input)) / self.std.expand_as(input)

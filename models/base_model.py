@@ -18,7 +18,9 @@ class BaseModel():
     def initialize(self, opt):
         self.opt = opt
         self.gpu_ids = opt.gpu_ids
+        self.use_gpu = len(opt.gpu_ids) > 0 and torch.cuda.is_available()
         self.isTrain = opt.isTrain
+        self.use_add = opt.use_add  # if True, use 'add input' and 'add all' models from BicycleGAN, else directly concated image and embedding
         self.device = torch.device('cuda:{}'.format(self.gpu_ids[0])) if self.gpu_ids else torch.device('cpu')
         self.save_dir = os.path.join(opt.checkpoints_dir, opt.name)
         if opt.resize_or_crop != 'scale_width':
@@ -28,6 +30,7 @@ class BaseModel():
         self.visual_names = []
         self.image_paths = []
         self.current_iter = 0
+        self.current_batch_size = opt.batchSize
 
     def set_input(self, input):
         self.input = input
