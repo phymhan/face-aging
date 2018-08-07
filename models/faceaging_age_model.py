@@ -70,14 +70,10 @@ class FaceAgingAgeModel(BaseModel):
         else:  # during test time, only load Gs
             self.model_names = ['G']
         # load/define networks
-        if self.use_add:
-            self.netG = networks.define_G_add(opt.input_nc, opt.output_nc, opt.embedding_nc, opt.ngf,
-                                              which_model_netG=opt.which_model_netG,
-                                              norm=opt.norm_G, nl=opt.nl, use_dropout=opt.use_dropout, init_type=opt.init_type,
-                                              gpu_ids=self.gpu_ids, where_add=self.opt.where_add, upsample=opt.upsample)
-        else:
-            self.netG = networks.define_G(opt.input_nc + opt.embedding_nc, opt.output_nc, opt.ngf,
-                                          opt.which_model_netG, opt.norm_G, not opt.no_dropout, opt.init_type, self.gpu_ids)
+        self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.embedding_nc, opt.ngf,
+                                      which_model_netG=opt.which_model_netG,
+                                      norm=opt.norm_G, nl=opt.nl, use_dropout=opt.use_dropout, init_type=opt.init_type,
+                                      gpu_ids=self.gpu_ids, upsample=opt.upsample)
 
         if self.isTrain:
             use_sigmoid = opt.no_lsgan
@@ -157,11 +153,7 @@ class FaceAgingAgeModel(BaseModel):
         # FIXME: embeddings detached here, fix me if updating E, see BicycleGAN
         self.embedding_A = self.embedding_normalize(self.age_A)
         self.embedding_B = self.embedding_normalize(self.age_B)
-
-        if self.use_add:
-            self.fake_B = self.netG(self.real_A, self.embedding_B)
-        else:
-            self.fake_B = self.netG(torch.cat((self.real_A, expand2d(self.embedding_B, self.opt.fineSize)), 1))
+        self.fake_B = self.netG(self.real_A, self.embedding_B)
         self.fake_B_IP = upsample2d(self.fake_B, self.opt.fineSize_IP)
 
     def backward_D(self):
@@ -251,10 +243,7 @@ class FaceAgingAgeModel(BaseModel):
             aging_visuals = {}
             for L in range(self.opt.num_classes):
                 embedding = self.fixed_embeddings[L]
-                if self.use_add:
-                    aging_visuals[L] = self.netG(self.real_A[0:1, ...], embedding)
-                else:
-                    aging_visuals[L] = self.netG(torch.cat((self.real_A[0:1, ...], expand2d_as(embedding, self.real_A[0:1, ...])), 1))
+                aging_visuals[L] = self.netG(self.real_A[0:1, ...], embedding)
             for L in range(self.opt.num_classes):
                 visual_ret['age_'+str(L)] = aging_visuals[L]
         self.set_requires_grad(self.netG, True)

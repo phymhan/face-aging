@@ -85,48 +85,32 @@ def init_net(net, init_type='normal', gpu_ids=[]):
     return net
 
 
-def define_G(input_nc, output_nc, ngf, which_model_netG, norm='batch', use_dropout=False, init_type='normal', gpu_ids=[]):
-    netG = None
-    norm_layer = get_norm_layer(norm_type=norm)
-
-    if which_model_netG == 'resnet_9blocks':
-        netG = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
-    elif which_model_netG == 'resnet_6blocks':
-        netG = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
-    elif which_model_netG == 'unet_128':
-        netG = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
-    elif which_model_netG == 'unet_256':
-        netG = UnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
-    else:
-        raise NotImplementedError('Generator model name [%s] is not recognized' % which_model_netG)
-    return init_net(netG, init_type, gpu_ids)
-
-
-# define_G from BicycleGAN
-def define_G_add(input_nc, output_nc, nz, ngf, which_model_netG='unet_128', norm='batch', nl='relu',
-                 use_dropout=False, init_type='xavier', gpu_ids=[], where_add='input', upsample='bilinear'):
+def define_G(input_nc, output_nc, nz, ngf, which_model_netG='unet_128', norm='batch', nl='relu',
+             use_dropout=False, init_type='xavier', gpu_ids=[], upsample='bilinear'):
     netG = None
     norm_layer = get_norm_layer(norm_type=norm)
     nl_layer = get_non_linearity(layer_type=nl)
-    # upsample = 'bilinear'
 
-    if nz == 0:
-        where_add = 'input'
-
-    if which_model_netG == 'unet_128' and where_add == 'input':
+    if which_model_netG == 'resnet_9blocks':
+        netG = ResnetGenerator(input_nc, output_nc, nz, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
+    elif which_model_netG == 'resnet_6blocks':
+        netG = ResnetGenerator(input_nc, output_nc, nz, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
+    elif which_model_netG == 'unet_128':
+        netG = UnetGenerator(input_nc, output_nc, nz, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
+    elif which_model_netG == 'unet_256':
+        netG = UnetGenerator(input_nc, output_nc, nz, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
+    elif which_model_netG == 'unet_128_input':
         netG = G_Unet_add_input(input_nc, output_nc, nz, 7, ngf, norm_layer=norm_layer, nl_layer=nl_layer,
                                 use_dropout=use_dropout, gpu_ids=gpu_ids, upsample=upsample)
-    elif which_model_netG == 'unet_256' and where_add == 'input':
-        netG = G_Unet_add_input(input_nc, output_nc, nz, 8, ngf, norm_layer=norm_layer, nl_layer=nl_layer,
-                                use_dropout=use_dropout, gpu_ids=gpu_ids, upsample=upsample)
-    elif which_model_netG == 'unet_128' and where_add == 'all':
+    elif which_model_netG == 'unet_128_all':
         netG = G_Unet_add_all(input_nc, output_nc, nz, 7, ngf, norm_layer=norm_layer, nl_layer=nl_layer,
                               use_dropout=use_dropout, gpu_ids=gpu_ids, upsample=upsample)
-    elif which_model_netG == 'unet_256' and where_add == 'all':
+    elif which_model_netG == 'unet_256_input':
+        netG = G_Unet_add_input(input_nc, output_nc, nz, 8, ngf, norm_layer=norm_layer, nl_layer=nl_layer,
+                                use_dropout=use_dropout, gpu_ids=gpu_ids, upsample=upsample)
+    elif which_model_netG == 'unet_256_all':
         netG = G_Unet_add_all(input_nc, output_nc, nz, 8, ngf, norm_layer=norm_layer, nl_layer=nl_layer,
                               use_dropout=use_dropout, gpu_ids=gpu_ids, upsample=upsample)
-    elif which_model_netG == 'drn':
-        netG = DRNGenerator(input_nc, output_nc, nz)
     else:
         raise NotImplementedError('Generator model name [%s] is not recognized' % which_model_netG)
     return init_net(netG, init_type, gpu_ids)
@@ -322,9 +306,10 @@ class GANLoss2(nn.Module):
 # Code and idea originally from Justin Johnson's architecture.
 # https://github.com/jcjohnson/fast-neural-style/
 class ResnetGenerator(nn.Module):
-    def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks=6, padding_type='reflect'):
+    def __init__(self, input_nc, output_nc, nz=0, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks=6, padding_type='reflect'):
         assert(n_blocks >= 0)
         super(ResnetGenerator, self).__init__()
+        input_nc = input_nc + nz  # add
         self.input_nc = input_nc
         self.output_nc = output_nc
         self.ngf = ngf
@@ -365,8 +350,10 @@ class ResnetGenerator(nn.Module):
 
         self.model = nn.Sequential(*model)
 
-    def forward(self, input):
-        return self.model(input)
+    def forward(self, input, z=None):
+        z_img = z.view(z.size(0), z.size(1), 1, 1).expand(input.size(0), z.size(1), input.size(2), input.size(3))
+        input_and_z = torch.cat((input, z_img), 1)
+        return self.model(input_and_z)
 
 
 # Define a resnet block
@@ -417,10 +404,9 @@ class ResnetBlock(nn.Module):
 # if |num_downs| == 7, image of size 128x128 will become of size 1x1
 # at the bottleneck
 class UnetGenerator(nn.Module):
-    def __init__(self, input_nc, output_nc, num_downs, ngf=64,
-                 norm_layer=nn.BatchNorm2d, use_dropout=False):
+    def __init__(self, input_nc, output_nc, nz=0, num_downs=7, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False):
         super(UnetGenerator, self).__init__()
-
+        input_nc = input_nc + nz  # add
         # construct unet structure
         unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=None, norm_layer=norm_layer, innermost=True)
         for i in range(num_downs - 5):
@@ -432,8 +418,10 @@ class UnetGenerator(nn.Module):
 
         self.model = unet_block
 
-    def forward(self, input):
-        return self.model(input)
+    def forward(self, input, z=None):
+        z_img = z.view(z.size(0), z.size(1), 1, 1).expand(input.size(0), z.size(1), input.size(2), input.size(3))
+        input_and_z = torch.cat((input, z_img), 1)
+        return self.model(input_and_z)
 
 
 # Defines the submodule with skip connection.
@@ -1158,7 +1146,8 @@ class UnetBlock_with_z(nn.Module):
 
     def forward(self, x, z):
         if self.nz > 0:
-            z_img = z.view(z.size(0), z.size(1), 1, 1).expand(z.size(0), z.size(1), x.size(2), x.size(3))
+            # z_img = z.view(z.size(0), z.size(1), 1, 1).expand(z.size(0), z.size(1), x.size(2), x.size(3))
+            z_img = z.view(z.size(0), z.size(1), 1, 1).expand(x.size(0), z.size(1), x.size(2), x.size(3))
             x_and_z = torch.cat([x, z_img], 1)
         else:
             x_and_z = x

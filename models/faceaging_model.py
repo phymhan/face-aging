@@ -65,20 +65,17 @@ class FaceAgingModel(BaseModel):
         else:  # during test time, only load Gs
             self.model_names = ['G']
         # load/define networks
-        if self.use_add:
-            self.netG = networks.define_G_add(opt.input_nc, opt.output_nc, opt.embedding_nc, opt.ngf,
-                                              which_model_netG=opt.which_model_netG,
-                                              norm=opt.norm_G, nl=opt.nl, use_dropout=opt.use_dropout, init_type=opt.init_type,
-                                              gpu_ids=self.gpu_ids, where_add=self.opt.where_add, upsample=opt.upsample)
-        else:
-            self.netG = networks.define_G(opt.input_nc + opt.embedding_nc, opt.output_nc, opt.ngf,
-                                          opt.which_model_netG, opt.norm_G, not opt.no_dropout, opt.init_type, self.gpu_ids)
+        self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.embedding_nc, opt.ngf,
+                                      which_model_netG=opt.which_model_netG,
+                                      norm=opt.norm_G, nl=opt.nl, use_dropout=opt.use_dropout, init_type=opt.init_type,
+                                      gpu_ids=self.gpu_ids, upsample=opt.upsample)
 
         if self.isTrain:
             use_sigmoid = opt.no_lsgan
             # define netD
             self.netD = networks.define_D(opt.embedding_nc + opt.output_nc, opt.ndf, opt.which_model_netD,
-                                          opt.n_layers_D, opt.norm_D, use_sigmoid, opt.init_type, self.gpu_ids)
+                                          opt.n_layers_D, opt.norm_D, use_sigmoid, opt.init_type,
+                                          num_Ds=opt.num_Ds, gpu_ids=self.gpu_ids)
             # define netIP, which is not saved
             self.netIP = networks.define_IP(opt.which_model_netIP, opt.input_nc, self.gpu_ids)
             if isinstance(self.netIP, torch.nn.DataParallel):
@@ -98,7 +95,7 @@ class FaceAgingModel(BaseModel):
             # TODO: use num_classes pools
             self.fake_B_pool = [ImagePool(opt.pool_size) for _ in range(self.opt.num_classes)]
             # define loss functions
-            self.criterionGAN = networks.GANLoss(use_lsgan=not opt.no_lsgan).to(self.device)
+            self.criterionGAN = networks.GANLoss(mse_loss=not opt.no_lsgan).to(self.device)
             self.criterionL1 = torch.nn.L1Loss()
             if opt.identity_preserving_criterion.lower() == 'mse':
                 self.criterionIP = torch.nn.MSELoss()
@@ -163,10 +160,8 @@ class FaceAgingModel(BaseModel):
         self.current_batch_size = int(self.real_A.size(0))
 
     def forward(self):
-        if self.use_add:
-            self.fake_B = self.netG(self.real_A, self.one_hot_labels[self.label_B].expand(self.current_batch_size, self.opt.embedding_nc, 1, 1))
-        else:
-            self.fake_B = self.netG(torch.cat((self.real_A, expand2d_as(self.one_hot_labels[self.label_B], self.real_A)), 1))
+        # self.fake_B = self.netG(self.real_A, self.one_hot_labels[self.label_B].expand(self.current_batch_size, self.opt.embedding_nc, 1, 1))
+        self.fake_B = self.netG(self.real_A, self.one_hot_labels[self.label_B])
         self.fake_B_IP = upsample2d(self.fake_B, self.opt.fineSize_IP)
         self.fake_B_AC = upsample2d(self.fake_B, self.opt.fineSize_AC)
 
@@ -265,10 +260,7 @@ class FaceAgingModel(BaseModel):
             if isinstance(name, str):
                 visual_ret[name] = getattr(self, name)
         if self.opt.display_aging_visuals:
-            if self.use_add:
-                aging_visuals = {L: self.netG(self.real_A[0:1, ...], self.one_hot_labels[L]) for L in range(self.opt.num_classes)}
-            else:
-                aging_visuals = {L: self.netG(torch.cat((self.real_A[0:1, ...], expand2d(self.one_hot_labels[L], self.opt.fineSize)), 1)) for L in range(self.opt.num_classes)}
+            aging_visuals = {L: self.netG(self.real_A[0:1, ...], self.one_hot_labels[L]) for L in range(self.opt.num_classes)}
             for L in range(self.opt.num_classes):
                 visual_ret['age_'+str(L)] = aging_visuals[L]
         self.set_requires_grad(self.netG, True)
