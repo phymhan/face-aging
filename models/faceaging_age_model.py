@@ -37,7 +37,7 @@ class FaceAgingAgeModel(BaseModel):
         parser.add_argument('--fineSize_E', type=int, default=224, help='fineSize for AC')
         parser.add_argument('--pretrained_model_path_E', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to E net')
         parser.add_argument('--embedding_mean', type=float, nargs='*', default=[0.0], help='means of embedding')
-        parser.add_argument('--embedding_std', type=float, nargs='*', default=[1.0], help='stds of embedding')
+        parser.add_argument('--embedding_std', type=float, nargs='*', default=[100], help='stds of embedding')
         if is_train:
             parser.add_argument('--lambda_L1', type=float, default=0.001, help='weight for L1 loss')
             parser.add_argument('--lambda_IP', type=float, default=0.1, help='weight for identity preserving loss')
@@ -49,6 +49,7 @@ class FaceAgingAgeModel(BaseModel):
             parser.add_argument('--aging_visual_embedding_path', type=str, default='pretrained_models/features.npy', help='pregenerated age embeddings')
             parser.add_argument('--lr_E', type=float, default=0.0002, help='learning rate for E')
             parser.add_argument('--no_trick', action='store_true')
+            parser.add_argument('--identity_preserving_criterion', type=str, default='mse', help='which criterion to use for identity preserving loss')
             parser.add_argument('--embedding_reconstruction_criterion', type=str, default='mse', help='which criterion to use for embedding reconstruction loss')
 
         return parser
@@ -72,7 +73,7 @@ class FaceAgingAgeModel(BaseModel):
         if self.use_add:
             self.netG = networks.define_G_add(opt.input_nc, opt.output_nc, opt.embedding_nc, opt.ngf,
                                               which_model_netG=opt.which_model_netG,
-                                              norm=opt.norm, nl=opt.nl, use_dropout=opt.use_dropout, init_type=opt.init_type,
+                                              norm=opt.norm_G, nl=opt.nl, use_dropout=opt.use_dropout, init_type=opt.init_type,
                                               gpu_ids=self.gpu_ids, where_add=self.opt.where_add, upsample=opt.upsample)
         else:
             self.netG = networks.define_G(opt.input_nc + opt.embedding_nc, opt.output_nc, opt.ngf,
@@ -82,7 +83,8 @@ class FaceAgingAgeModel(BaseModel):
             use_sigmoid = opt.no_lsgan
             # define netD
             self.netD = networks.define_D(opt.embedding_nc + opt.output_nc, opt.ndf, opt.which_model_netD,
-                                          opt.n_layers_D, opt.norm_D, use_sigmoid, opt.init_type, self.gpu_ids)
+                                          opt.n_layers_D, opt.norm_D, use_sigmoid, opt.init_type,
+                                          num_Ds=opt.num_Ds, gpu_ids=self.gpu_ids)
             # define netIP, which is not saved
             self.netIP = networks.define_IP(opt.which_model_netIP, opt.input_nc, self.gpu_ids)
             if isinstance(self.netIP, torch.nn.DataParallel):
@@ -95,9 +97,16 @@ class FaceAgingAgeModel(BaseModel):
             assert(opt.pool_size == 0)
             self.fake_B_pool = [ImagePool(opt.pool_size) for _ in range(self.opt.num_classes)]
             # define loss functions
-            self.criterionGAN = networks.GANLoss2(use_lsgan=not opt.no_lsgan).to(self.device)  # GANLoss2
+            # self.criterionGAN = networks.GANLoss2(use_lsgan=not opt.no_lsgan).to(self.device)  # GANLoss2
+            self.criterionGAN = networks.GANLoss(mse_loss=not opt.no_lsgan).to(self.device)
             self.criterionL1 = torch.nn.L1Loss()
             self.criterionIP = torch.nn.MSELoss()
+            if opt.identity_preserving_criterion.lower() == 'mse':
+                self.criterionIP = torch.nn.MSELoss()
+            elif opt.identity_preserving_criterion.lower() == 'l1':
+                self.criterionIP = torch.nn.L1Loss()
+            else:
+                raise NotImplementedError('Not Implemented')
             if opt.embedding_reconstruction_criterion.lower() == 'mse':
                 self.criterionRec = torch.nn.MSELoss()
             elif opt.embedding_reconstruction_criterion.lower() == 'l1':
@@ -116,7 +125,7 @@ class FaceAgingAgeModel(BaseModel):
 
         self.embedding_mean = opt.embedding_mean
         self.embedding_std = opt.embedding_std
-        self.embedding_normalize = lambda x: x / 100
+        self.embedding_normalize = lambda x: (x - opt.embedding_mean[0]) / opt.embedding_std[0]
 
         if self.isTrain and opt.display_aging_visuals:
             self.pre_generate_embeddings()
@@ -137,8 +146,8 @@ class FaceAgingAgeModel(BaseModel):
         self.real_A_IP = upsample2d(self.real_A, self.opt.fineSize_IP)
         # self.real_A_E = upsample2d(self.real_A, self.opt.fineSize_E)
         # self.real_B_E = upsample2d(self.real_B, self.opt.fineSize_E)
-        self.label_A = input['A_label'].to(self.device)
-        self.label_B = input['B_label'].to(self.device)
+        self.age_A = input['A_age'].to(self.device)
+        self.age_B = input['B_age'].to(self.device)
         self.label_AB = input['label']
         self.image_paths = input['B_paths']
         self.current_iter += 1
@@ -146,8 +155,8 @@ class FaceAgingAgeModel(BaseModel):
 
     def forward(self):
         # FIXME: embeddings detached here, fix me if updating E, see BicycleGAN
-        self.embedding_A = self.embedding_normalize(self.label_A)
-        self.embedding_B = self.embedding_normalize(self.label_B)
+        self.embedding_A = self.embedding_normalize(self.age_A)
+        self.embedding_B = self.embedding_normalize(self.age_B)
 
         if self.use_add:
             self.fake_B = self.netG(self.real_A, self.embedding_B)
@@ -161,22 +170,22 @@ class FaceAgingAgeModel(BaseModel):
         # TODO: query from pool
         fake_B = torch.cat((self.fake_B, expand2d(self.embedding_B, self.opt.fineSize)), 1)
         pred_fake = self.netD(fake_B.detach())
-        # self.loss_D_fake = self.criterionGAN(pred_fake, False)
-        self.loss_D_fake = self.criterionGAN(pred_fake, [0])
+        self.loss_D_fake = self.criterionGAN(pred_fake, False)
+        # self.loss_D_fake = self.criterionGAN(pred_fake, [0])
 
         # Real_B image with embedding_B
         real_B_embedding_B = torch.cat((self.real_B, expand2d(self.embedding_B, self.opt.fineSize)), 1)
         pred_real = self.netD(real_B_embedding_B)
-        # self.loss_D_real_right = self.criterionGAN(pred_real, True)
-        self.loss_D_real_right = self.criterionGAN(pred_real, [1])
+        self.loss_D_real_right = self.criterionGAN(pred_real, True)
+        # self.loss_D_real_right = self.criterionGAN(pred_real, [1])
 
         if not self.opt.no_trick:
             # Real_B image with embedding_A
             real_B_embedding_A = torch.cat((self.real_B, expand2d(self.embedding_A, self.opt.fineSize)), 1)
             pred_real = self.netD(real_B_embedding_A)
-            target_label = [1 if L == 1 else 0 for L in self.label_AB]
-            self.loss_D_real_wrong = self.criterionGAN(pred_real, target_label)
-            # self.loss_D_real_wrong = self.criterionGAN(pred_real, [0])
+            self.loss_D_real_wrong = self.criterionGAN(pred_real, [0])
+            # target_label = [1 if L == 1 else 0 for L in self.label_AB]
+            # self.loss_D_real_wrong = self.criterionGAN(pred_real, target_label)
             # Combined loss
             self.loss_D = (self.loss_D_fake + (self.loss_D_real_right + self.loss_D_real_wrong) * 0.5) * 0.5
         else:
@@ -190,8 +199,8 @@ class FaceAgingAgeModel(BaseModel):
         # First, G(A) should fake the discriminator
         fake_B = torch.cat((self.fake_B, expand2d(self.embedding_B, self.opt.fineSize)), 1)
         pred_fake = self.netD(fake_B)
-        # self.loss_G_GAN = self.criterionGAN(pred_fake, True)
-        self.loss_G_GAN = self.criterionGAN(pred_fake, [1])
+        self.loss_G_GAN = self.criterionGAN(pred_fake, True)
+        # self.loss_G_GAN = self.criterionGAN(pred_fake, [1])
 
         # L1: fake_B ~= real_A
         if self.opt.lambda_L1 > 0.0:

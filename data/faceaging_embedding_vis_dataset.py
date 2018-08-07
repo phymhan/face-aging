@@ -17,22 +17,23 @@ class FaceAgingEmbeddingVisDataset(BaseDataset):
         self.root = opt.dataroot
         # labels: A < B: 0, A = B: 1, A > B: 2
         self.dir = self.root
+        # pair-images are specified by sourcefile_A
         with open(opt.sourcefile_A, 'r') as f:
             sourcefile = f.readlines()
-        for (i, line) in enumerate(sourcefile, 0):
-            sourcefile[i] = line.rstrip('\n')
-        self.sourcefile = sourcefile
+        self.sourcefile = [line.rstrip('\n') for line in sourcefile]
         self.size = min(len(self.sourcefile), self.opt.max_dataset_size)
         self.transform = get_transform(opt)
 
         self.num_classes = len(opt.age_binranges)
         self.age_bins = opt.age_binranges
         self.age_bins_with_inf = opt.age_binranges + [float('inf')]
+
+        # single images with age/label is specified by sourcefile_B
         with open(opt.sourcefile_B, 'r') as f:
             sourcefile = f.readlines()
         self.paths = [os.path.join(self.dir, name.rstrip('\n').split()[0]) for name in sourcefile]
         self.fnames = [name.rstrip('\n').split()[0] for name in sourcefile]
-        # parse paths
+        # create age list
         ageList = [[] for _ in range(self.num_classes)]  # list of list, the outer list is indexed by age label
         for (id, fname) in enumerate(self.fnames, 0):
             L = parse_age_label(fname, self.age_bins_with_inf)

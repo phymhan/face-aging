@@ -19,7 +19,7 @@ def get_norm_layer(norm_type='instance'):
     elif norm_type == 'instance_affine':
         norm_layer = functools.partial(nn.InstanceNorm2d, affine=True, track_running_stats=True)
     elif norm_type == 'none':
-        norm_layer = None
+        norm_layer = IdentityMapping
     else:
         raise NotImplementedError('normalization layer [%s] is not found' % norm_type)
     return norm_layer
@@ -125,13 +125,15 @@ def define_G_add(input_nc, output_nc, nz, ngf, which_model_netG='unet_128', norm
     elif which_model_netG == 'unet_256' and where_add == 'all':
         netG = G_Unet_add_all(input_nc, output_nc, nz, 8, ngf, norm_layer=norm_layer, nl_layer=nl_layer,
                               use_dropout=use_dropout, gpu_ids=gpu_ids, upsample=upsample)
+    elif which_model_netG == 'drn':
+        netG = DRNGenerator(input_nc, output_nc, nz)
     else:
         raise NotImplementedError('Generator model name [%s] is not recognized' % which_model_netG)
     return init_net(netG, init_type, gpu_ids)
 
 
 def define_D(input_nc, ndf, which_model_netD,
-             n_layers_D=3, norm='batch', use_sigmoid=False, init_type='normal', gpu_ids=[]):
+             n_layers_D=3, norm='batch', use_sigmoid=False, init_type='normal', num_Ds=1, gpu_ids=[]):
     netD = None
     norm_layer = get_norm_layer(norm_type=norm)
 
@@ -139,6 +141,9 @@ def define_D(input_nc, ndf, which_model_netD,
         netD = NLayerDiscriminator(input_nc, ndf, n_layers=3, norm_layer=norm_layer, use_sigmoid=use_sigmoid)
     elif which_model_netD == 'n_layers':
         netD = NLayerDiscriminator(input_nc, ndf, n_layers_D, norm_layer=norm_layer, use_sigmoid=use_sigmoid)
+    elif which_model_netD == 'n_layers_multi':
+        netD = D_NLayersMulti(input_nc=input_nc, ndf=ndf, n_layers=n_layers_D, norm_layer=norm_layer,
+                              use_sigmoid=use_sigmoid, gpu_ids=gpu_ids, num_D=num_Ds)
     elif which_model_netD == 'pixel':
         netD = PixelDiscriminator(input_nc, ndf, norm_layer=norm_layer, use_sigmoid=use_sigmoid)
     else:
@@ -219,31 +224,78 @@ def define_S(which_model_netS, input_nc=3, init_type='kaiming', num_classes=3, p
 # Classes
 ##############################################################################
 
-
 # Defines the GAN loss which uses either LSGAN or the regular GAN.
 # When LSGAN is used, it is basically same as MSELoss,
 # but it abstracts away the need to create the target label tensor
 # that has the same size as the input
+
+## Original GANLoss
+# class GANLoss(nn.Module):
+#     def __init__(self, use_lsgan=True, target_real_label=1.0, target_fake_label=0.0):
+#         super(GANLoss, self).__init__()
+#         self.register_buffer('real_label', torch.tensor(target_real_label))
+#         self.register_buffer('fake_label', torch.tensor(target_fake_label))
+#         if use_lsgan:
+#             self.loss = nn.MSELoss()
+#         else:
+#             self.loss = nn.BCELoss()
+#
+#     def get_target_tensor(self, input, target_is_real):
+#         if target_is_real:
+#             target_tensor = self.real_label
+#         else:
+#             target_tensor = self.fake_label
+#         return target_tensor.expand_as(input)
+#
+#     def __call__(self, input, target_is_real):
+#         target_tensor = self.get_target_tensor(input, target_is_real)
+#         return self.loss(input, target_tensor)
+
+
+## GANLoss from BicycleGAN
 class GANLoss(nn.Module):
-    def __init__(self, use_lsgan=True, target_real_label=1.0, target_fake_label=0.0):
+    def __init__(self, mse_loss=True, target_real_label=1.0, target_fake_label=0.0,
+                 tensor=torch.FloatTensor):
         super(GANLoss, self).__init__()
-        self.register_buffer('real_label', torch.tensor(target_real_label))
-        self.register_buffer('fake_label', torch.tensor(target_fake_label))
-        if use_lsgan:
+        self.real_label = target_real_label
+        self.fake_label = target_fake_label
+        self.real_label_var = None
+        self.fake_label_var = None
+        self.Tensor = tensor
+        if mse_loss:
             self.loss = nn.MSELoss()
         else:
             self.loss = nn.BCELoss()
 
     def get_target_tensor(self, input, target_is_real):
+        target_tensor = None
         if target_is_real:
-            target_tensor = self.real_label
+            create_label = ((self.real_label_var is None) or
+                            (self.real_label_var.numel() != input.numel()))
+            if create_label:
+                real_tensor = self.Tensor(input.size()).fill_(self.real_label)
+                self.real_label_var = real_tensor.cuda()
+            target_tensor = self.real_label_var
         else:
-            target_tensor = self.fake_label
-        return target_tensor.expand_as(input)
+            create_label = ((self.fake_label_var is None) or
+                            (self.fake_label_var.numel() != input.numel()))
+            if create_label:
+                fake_tensor = self.Tensor(input.size()).fill_(self.fake_label)
+                self.fake_label_var = fake_tensor.cuda()
+            target_tensor = self.fake_label_var
+        return target_tensor
 
-    def __call__(self, input, target_is_real):
-        target_tensor = self.get_target_tensor(input, target_is_real)
-        return self.loss(input, target_tensor)
+    def __call__(self, inputs, target_is_real):
+        # if input is a list
+        loss = 0.0
+        all_losses = []
+        for input in inputs:
+            target_tensor = self.get_target_tensor(input, target_is_real)
+            loss_input = self.loss(input, target_tensor)
+            loss = loss + loss_input
+            all_losses.append(loss_input)
+            # st()
+        return loss  #, all_losses
 
 
 # Allows mix of True (1) and False (0) in a batch
@@ -1125,8 +1177,167 @@ class UnetBlock_with_z(nn.Module):
 
 
 ###############################################################################
+# DRN Generators
+###############################################################################
+class DRNGenerator(nn.Module):
+    def __init__(self, input_nc=3, output_nc=3, nz=1):
+        super(DRNGenerator, self).__init__()
+        self.nz = nz
+        dropout = 0.8
+
+        self.block0 = nn.Sequential(
+            nn.Conv2d(input_nc + nz, 64, kernel_size=7, stride=1, padding=3, dilation=1),
+            nn.ReLU(True),
+        )
+
+        self.block1_ = nn.Conv2d(64, 128, kernel_size=1, stride=1, padding=0, dilation=1)
+
+        self.block1 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1, dilation=1),
+            nn.ReLU(True),
+            nn.Dropout(dropout),
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1, dilation=1),
+        )
+        self.block2 = nn.Sequential(
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=2, dilation=2),
+            nn.ReLU(True),
+            nn.Dropout(dropout),
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=2, dilation=2),
+        )
+        self.block3 = nn.Sequential(
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=4, dilation=4),
+            nn.ReLU(True),
+            nn.Dropout(dropout),
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=4, dilation=4),
+        )
+
+        self.block4 = nn.Sequential(
+            nn.Conv2d(128, 64, kernel_size=3, stride=1, padding=2, dilation=2),
+            nn.ReLU(True),
+            nn.Conv2d(64, output_nc, kernel_size=3, stride=1, padding=1, dilation=1),
+            nn.Tanh()
+        )
+
+    def forward(self, input, z):
+        z_img = z.view(z.size(0), z.size(1), 1, 1).expand(z.size(0), z.size(1), input.size(2), input.size(3))
+        input_and_z = torch.cat([input, z_img], 1)
+        x = self.block0(input_and_z)
+        x = self.block1_(x) + self.block1(x)
+        x = x + self.block2(x)
+        x = x + self.block3(x)
+        output = self.block4(x)
+        return output
+
+
+###############################################################################
+# Multiscale Discriminators
+###############################################################################
+class ListModule(object):
+    # should work with all kind of module
+    def __init__(self, module, prefix, *args):
+        self.module = module
+        self.prefix = prefix
+        self.num_module = 0
+        for new_module in args:
+            self.append(new_module)
+
+    def append(self, new_module):
+        if not isinstance(new_module, nn.Module):
+            raise ValueError('Not a Module')
+        else:
+            self.module.add_module(self.prefix + str(self.num_module), new_module)
+            self.num_module += 1
+
+    def __len__(self):
+        return self.num_module
+
+    def __getitem__(self, i):
+        if i < 0 or i >= self.num_module:
+            raise IndexError('Out of bound')
+        return getattr(self.module, self.prefix + str(i))
+
+
+class D_NLayersMulti(nn.Module):
+    def __init__(self, input_nc, ndf=64, n_layers=3,
+                 norm_layer=nn.BatchNorm2d, use_sigmoid=False, gpu_ids=[], num_D=1):
+        super(D_NLayersMulti, self).__init__()
+        # st()
+        self.gpu_ids = gpu_ids
+        self.num_D = num_D
+        if num_D == 1:
+            layers = self.get_layers(input_nc, ndf, n_layers, norm_layer, use_sigmoid)
+            self.model = nn.Sequential(*layers)
+        else:
+            self.model = ListModule(self, 'model')
+            layers = self.get_layers(input_nc, ndf, n_layers, norm_layer, use_sigmoid)
+            self.model.append(nn.Sequential(*layers))
+            self.down = nn.AvgPool2d(3, stride=2, padding=[1, 1], count_include_pad=False)
+            for i in range(num_D-1):
+                ndf = int(round(ndf/(2**(i+1))))
+                layers = self.get_layers(input_nc, ndf, n_layers, norm_layer, use_sigmoid)
+                self.model.append(nn.Sequential(*layers))
+
+    def get_layers(self, input_nc, ndf=64, n_layers=3,
+                   norm_layer=nn.BatchNorm2d, use_sigmoid=False):
+        kw = 4
+        padw = 1
+        sequence = [nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw), nn.LeakyReLU(0.2, True)]
+
+        nf_mult = 1
+        nf_mult_prev = 1
+        for n in range(1, n_layers):
+            nf_mult_prev = nf_mult
+            nf_mult = min(2**n, 8)
+            sequence += [
+                nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw),
+                norm_layer(ndf * nf_mult),
+                nn.LeakyReLU(0.2, True)
+            ]
+
+        nf_mult_prev = nf_mult
+        nf_mult = min(2**n_layers, 8)
+        sequence += [
+            nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw),
+            norm_layer(ndf * nf_mult),
+            nn.LeakyReLU(0.2, True)
+        ]
+
+        sequence += [nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)]
+
+        if use_sigmoid:
+            sequence += [nn.Sigmoid()]
+        return sequence
+
+    def parallel_forward(self, model, input):
+        if self.gpu_ids and isinstance(input.data, torch.cuda.FloatTensor):
+            return nn.parallel.data_parallel(model, input, self.gpu_ids)
+        else:
+            return model(input)
+
+    def forward(self, input):
+        if self.num_D == 1:
+            return self.parallel_forward(self.model, input)
+        result = []
+        down = input
+        for i in range(self.num_D):
+            result.append(self.parallel_forward(self.model[i], down))
+            if i != self.num_D-1:
+                down = self.parallel_forward(self.down, down)
+        return result
+
+
+###############################################################################
 # Utils
 ###############################################################################
+# Identity mapping
+class IdentityMapping(nn.Module):
+    def __init__(self, *args):
+        super(IdentityMapping, self).__init__()
+
+    def forward(self, x):
+        return x
+
+
 # Channel-wise normalization, similar to torchvision.transforms.Normalize but performed on a 4-D tensor
 class Normalize(nn.Module):
     def __init__(self, mean=[], std=[], use_gpu=True):

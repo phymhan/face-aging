@@ -19,9 +19,7 @@ class FaceAgingEmbeddingDataset(BaseDataset):
         self.dir = self.root
         with open(opt.sourcefile_A, 'r') as f:
             sourcefile = f.readlines()
-        for (i, line) in enumerate(sourcefile, 0):
-            sourcefile[i] = line.rstrip('\n')
-        self.sourcefile = sourcefile
+        self.sourcefile = [line.rstrip('\n') for line in sourcefile]
         self.size = min(len(self.sourcefile), self.opt.max_dataset_size)
         self.transform = get_transform(opt)
 

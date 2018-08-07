@@ -62,18 +62,27 @@ def mkdir(path):
 
 
 def parse_age(fname):
+    # returns a float
     strlist = fname.split('_')
-    age = int(strlist[0])
+    age = float(strlist[0])
     return age
 
 
 def parse_age_label(fname, binranges):
     age = parse_age(fname)
-    l = None
-    for l in range(len(binranges)-1):
-        if (age >= binranges[l]) and (age < binranges[l+1]):
+    L = None
+    for L in range(len(binranges)-1):
+        if (age >= binranges[L]) and (age < binranges[L+1]):
             break
-    return l
+    return L
+
+
+def get_age_label(age, binranges):
+    L = None
+    for L in range(len(binranges) - 1):
+        if (age >= binranges[L]) and (age < binranges[L + 1]):
+            break
+    return L
 
 
 def upsample2d(inputTensor, targetSize):

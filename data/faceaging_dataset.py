@@ -1,7 +1,7 @@
 import os.path
 from data.base_dataset import BaseDataset, get_transform
 from data.image_folder import make_dataset, make_dataset_with_filenames
-from util.util import parse_age_label, parse_age
+from util.util import parse_age_label, parse_age, get_age_label
 from PIL import Image
 import random
 
@@ -24,26 +24,36 @@ class FaceAgingDataset(BaseDataset):
             self.dir = os.path.join(opt.dataroot, opt.phase)
             self.paths, self.fnames = make_dataset_with_filenames(self.dir)
         else:
+            # sourcefile: filename <age (optional)>
             self.dir = self.root
             with open(opt.sourcefile_A, 'r') as f:
                 sourcefile = f.readlines()
-            self.paths = [os.path.join(self.dir, name.rstrip('\n').split()[0]) for name in sourcefile]
-            self.fnames = [name.rstrip('\n').split()[0] for name in sourcefile]
-        self.parse_paths()
+            self.sourcefile = [line.rstrip('\n') for line in sourcefile]
+            self.paths = [os.path.join(self.dir, name.split()[0]) for name in self.sourcefile]
+        self.create_age_list()
         self.size = min(self.size, self.opt.max_dataset_size)
         self.transform = get_transform(opt)
 
-    def parse_paths(self):
+    def create_age_list(self):
         ageList = [[] for _ in range(self.num_classes)]  # list of list, the outer list is indexed by age label
         ages = []
-        for (id, fname) in enumerate(self.fnames, 0):
-            L = parse_age_label(fname, self.age_bins_with_inf)
+        for (id, line) in enumerate(self.sourcefile, 0):
+            line_splitted = line.split()
+            if len(line_splitted) > 1:
+                age = float(line_splitted[1])
+            else:
+                age = parse_age(line_splitted[0])
+            ages.append(age)
+            L = get_age_label(age, self.age_bins_with_inf)
             ageList[L].append(id)
-            ages.append(parse_age(fname))
         maxLen = max([len(ls) for ls in ageList])
         self.ageList = ageList
         self.size = maxLen
         self.ages = ages
+
+    def shuffle_age_list(self):
+        for L in range(self.num_classes):
+            random.shuffle(self.ageList[L])
 
     def __getitem__(self, index):
         ret_dict = {}
@@ -63,10 +73,6 @@ class FaceAgingDataset(BaseDataset):
         # shuffle ageList
         self.shuffle_age_list()
         return self.size
-
-    def shuffle_age_list(self):
-        for L in range(self.num_classes):
-            random.shuffle(self.ageList[L])
 
     def name(self):
         return 'FaceAgingDataset'

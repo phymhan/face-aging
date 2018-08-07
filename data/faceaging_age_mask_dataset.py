@@ -8,7 +8,7 @@ import torch
 
 
 # TODO: set random seed
-class FaceAgingAgeDataset(BaseDataset):
+class FaceAgingAgeMaskDataset(BaseDataset):
     @staticmethod
     def modify_commandline_options(parser, is_train):
         return parser
@@ -20,6 +20,8 @@ class FaceAgingAgeDataset(BaseDataset):
             sourcefile = f.readlines()
         self.sourcefile = [line.rstrip('\n') for line in sourcefile]
         self.transform = get_transform(opt)
+
+        self.root_mask = opt.dataroot_mask
 
     def __getitem__(self, index):
         line = self.sourcefile[index].split()
@@ -36,10 +38,18 @@ class FaceAgingAgeDataset(BaseDataset):
             imgA = self.transform(imgA)
             imgB = self.transform(imgB)
 
-        return {'A': imgA, 'B': imgB, 'A_age': ageA, 'B_age': ageB, 'label': int(line[2]), 'B_paths': B_path}
+        idA = fnameA.split('_')[1]
+        idB = fnameB.split('_')[1]
+
+        maskA = Image.open(os.path.join(self.root_mask, idA)).convert('RGB')
+        maskB = Image.open(os.path.join(self.root_mask, idB)).convert('RGB')
+        maskA = self.transform(maskA)
+        maskB = self.transform(maskB)
+
+        return {'A': imgA, 'B': imgB, 'A_mask': maskA, 'B_mask': maskB, 'A_age': ageA, 'B_age': ageB, 'label': int(line[2]), 'B_paths': B_path}
 
     def __len__(self):
         return len(self.sourcefile)
 
     def name(self):
-        return 'FaceAgingAgeDataset'
+        return 'FaceAgingAgeMaskDataset'

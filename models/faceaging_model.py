@@ -40,9 +40,11 @@ class FaceAgingModel(BaseModel):
             parser.add_argument('--pretrained_model_path_IP', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to IP net')
             parser.add_argument('--pretrained_model_path_AC', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to AC net')
             parser.add_argument('--display_aging_visuals', action='store_true', help='display aging visuals if True')
+            parser.add_argument('--train_label_pairs', type=str, default='', help='file path of train label pairs')
             parser.add_argument('--lr_AC', type=float, default=0.0002, help='learning rate for AC')
             parser.add_argument('--no_AC_on_fake', action='store_true', help='do *not* train AC on fake images')
             parser.add_argument('--no_trick', action='store_true')
+            parser.add_argument('--identity_preserving_criterion', type=str, default='mse', help='which criterion to use for identity preserving loss')
 
         return parser
 
@@ -50,6 +52,7 @@ class FaceAgingModel(BaseModel):
         BaseModel.initialize(self, opt)
         assert(opt.input_nc == opt.output_nc)
         self.opt.num_classes = len(opt.age_binranges)
+        assert(opt.embedding_nc == self.opt.num_classes)
         # self.opt.fineSize_IP = self.get_fineSize(self.opt.which_model_netIP)
         # self.opt.fineSize_AC = self.get_fineSize(self.opt.which_model_netAC)
         self.isTrain = opt.isTrain
@@ -65,7 +68,7 @@ class FaceAgingModel(BaseModel):
         if self.use_add:
             self.netG = networks.define_G_add(opt.input_nc, opt.output_nc, opt.embedding_nc, opt.ngf,
                                               which_model_netG=opt.which_model_netG,
-                                              norm=opt.norm, nl=opt.nl, use_dropout=opt.use_dropout, init_type=opt.init_type,
+                                              norm=opt.norm_G, nl=opt.nl, use_dropout=opt.use_dropout, init_type=opt.init_type,
                                               gpu_ids=self.gpu_ids, where_add=self.opt.where_add, upsample=opt.upsample)
         else:
             self.netG = networks.define_G(opt.input_nc + opt.embedding_nc, opt.output_nc, opt.ngf,
@@ -97,7 +100,12 @@ class FaceAgingModel(BaseModel):
             # define loss functions
             self.criterionGAN = networks.GANLoss(use_lsgan=not opt.no_lsgan).to(self.device)
             self.criterionL1 = torch.nn.L1Loss()
-            self.criterionIP = torch.nn.MSELoss()
+            if opt.identity_preserving_criterion.lower() == 'mse':
+                self.criterionIP = torch.nn.MSELoss()
+            elif opt.identity_preserving_criterion.lower() == 'l1':
+                self.criterionIP = torch.nn.L1Loss()
+            else:
+                raise NotImplementedError('Not Implemented')
             self.criterionAC = torch.nn.CrossEntropyLoss()
 
             # initialize optimizers
@@ -110,7 +118,7 @@ class FaceAgingModel(BaseModel):
             self.optimizers.append(self.optimizer_AC)
 
         if self.isTrain:
-            if not self.opt.train_label_pairs:
+            if self.opt.train_label_pairs:
                 with open(self.opt.train_label_pairs, 'r') as f:
                     self.opt.train_label_pairs = f.readlines()
 
@@ -130,7 +138,7 @@ class FaceAgingModel(BaseModel):
 
     def sample_labels(self):
         # returns label_A, label_B, label_B_not
-        if not self.opt.train_label_pairs:
+        if self.opt.train_label_pairs:
             idx = self.current_iter % len(self.opt.train_label_pairs)
             labels_AnB = self.opt.train_label_pairs[idx].rstrip('\n').split()
         else:
