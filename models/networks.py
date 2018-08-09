@@ -140,8 +140,7 @@ def define_IP(which_model_netIP, input_nc, gpu_ids=[]):
     netIP = None
 
     if which_model_netIP == 'alexnet':
-        assert(input_nc == 3)
-        netIP = AlexNetFeature('None')
+        netIP = AlexNetFeature(input_nc=input_nc, pooling='None')
     else:
         raise NotImplementedError('Identity-preserving model name [%s] is not recognized' % which_model_netIP)
 
@@ -156,11 +155,11 @@ def define_AC(which_model_netAC, input_nc=3, init_type='normal', num_classes=0, 
     netAC = None
 
     if which_model_netAC == 'alexnet':
-        assert(input_nc == 3)
-        netAC = AlexNet(num_classes)
+        netAC = AlexNet(input_nc=input_nc, num_classes=num_classes)
     elif which_model_netAC == 'alexnet_lite':
-        assert(input_nc == 3)
-        netAC = AlexNetLite(num_classes, pooling, dropout)
+        netAC = AlexNetLite(input_nc=input_nc, num_classes=num_classes, pooling=pooling, dropout=dropout)
+    elif 'resnet' in which_model_netAC:
+        netAC = ResNet(input_nc=input_nc, num_classes=num_classes, which_model=which_model_netAC)
     else:
         raise NotImplementedError('Auxiliary classifier name [%s] is not recognized' % which_model_netIP)
 
@@ -173,9 +172,9 @@ def define_E(which_model_netE, input_nc=3, init_type='kaiming', pooling='max',
     netE = None
 
     if which_model_netE == 'alexnet':
-        base = AlexNetFeature(pooling='None')
+        base = AlexNetFeature(input_nc=input_nc, pooling='None')
     elif 'resnet' in which_model_netE:
-        base = ResNetFeature(which_model_netE)
+        base = ResNetFeature(input_nc=input_nc, which_model=which_model_netE)
     else:
         raise NotImplementedError('Model [%s] is not implemented.' % opt.which_model)
 
@@ -191,9 +190,9 @@ def define_S(which_model_netS, input_nc=3, init_type='kaiming', num_classes=3, p
     netS = None
 
     if which_model_netS == 'alexnet':
-        base = AlexNetFeature(pooling='None')
+        base = AlexNetFeature(input_nc=input_nc, pooling='None')
     elif 'resnet' in which_model_netS:
-        base = ResNetFeature(which_model_netS)
+        base = ResNetFeature(input_nc=input_nc, which_model=which_model_netS)
     else:
         raise NotImplementedError('Model [%s] is not implemented.' % opt.which_model)
 
@@ -213,7 +212,6 @@ def define_S(which_model_netS, input_nc=3, init_type='kaiming', num_classes=3, p
 # but it abstracts away the need to create the target label tensor
 # that has the same size as the input
 
-## Original GANLoss
 # class GANLoss(nn.Module):
 #     def __init__(self, use_lsgan=True, target_real_label=1.0, target_fake_label=0.0):
 #         super(GANLoss, self).__init__()
@@ -236,7 +234,7 @@ def define_S(which_model_netS, input_nc=3, init_type='kaiming', num_classes=3, p
 #         return self.loss(input, target_tensor)
 
 
-## GANLoss from BicycleGAN
+# GANLoss borrowed from BicycleGAN
 class GANLoss(nn.Module):
     def __init__(self, mse_loss=True, target_real_label=1.0, target_fake_label=0.0,
                  tensor=torch.FloatTensor):
@@ -676,10 +674,10 @@ class SiameseFeature(nn.Module):
 
 
 class AlexNet(nn.Module):
-    def __init__(self, num_classes=1000):
+    def __init__(self, input_nc=3, num_classes=1000):
         super(AlexNet, self).__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
+            nn.Conv2d(input_nc, 64, kernel_size=11, stride=4, padding=2),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2),
             nn.Conv2d(64, 192, kernel_size=5, padding=2),
@@ -720,12 +718,12 @@ class AlexNet(nn.Module):
 
 # a lighter alexnet, with fewer params in fc layers
 class AlexNetLite(nn.Module):
-    def __init__(self, num_classes=10, pooling='avg', dropout=0.5):
+    def __init__(self, input_nc=3, num_classes=10, pooling='avg', dropout=0.5):
         super(AlexNetLite, self).__init__()
         self.pooling = pooling
         fw = 1 if pooling else 6
         self.features = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
+            nn.Conv2d(input_nc, 64, kernel_size=11, stride=4, padding=2),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2),
             nn.Conv2d(64, 192, kernel_size=5, padding=2),
@@ -761,17 +759,17 @@ class AlexNetLite(nn.Module):
         if isinstance(state_dict, str):
             state_dict = torch.load(state_dict)
         for key in list(state_dict.keys()):
-            if key.startswith('fc'):
+            if key.startswith('classifier'):
                 state_dict.pop(key)
         self.load_state_dict(state_dict, strict=False)
 
 
 class AlexNetFeature(nn.Module):
-    def __init__(self, pooling='max'):
+    def __init__(self, input_nc=3, pooling='max'):
         super(AlexNetFeature, self).__init__()
         self.pooling = pooling
         sequence = [
-            nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
+            nn.Conv2d(input_nc, 64, kernel_size=11, stride=4, padding=2),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2),
             nn.Conv2d(64, 192, kernel_size=5, padding=2),
@@ -800,12 +798,16 @@ class AlexNetFeature(nn.Module):
         # invoked when used as `base' in SiameseNetwork
         if isinstance(state_dict, str):
             state_dict = torch.load(state_dict)
-        self.load_state_dict(state_dict, strict=False)
+        for key in list(state_dict.keys()):
+            if key.startswith('classifier'):
+                state_dict.pop(key)
+        self.load_state_dict(state_dict, strict=True)
 
 
 class ResNet(nn.Module):
-    def __init__(self, num_classes, which_model):
+    def __init__(self, input_nc=3, num_classes=0, which_model='resnet18'):
         super(ResNet, self).__init__()
+        self.input_nc = input_nc
         model = None
         if which_model == 'resnet18':
             from torchvision.models import resnet18
@@ -842,10 +844,11 @@ class ResNet(nn.Module):
 
 
 class ResNetFeature(nn.Module):
-    def __init__(self, which_model):
+    def __init__(self, input_nc=3, which_model='resnet18'):
         super(ResNetFeature, self).__init__()
         model = None
         feature_dim = None
+        self.input_nc = input_nc
         if which_model == 'resnet18':
             from torchvision.models import resnet18
             model = resnet18(False)

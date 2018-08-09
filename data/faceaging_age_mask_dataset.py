@@ -37,6 +37,10 @@ class FaceAgingAgeMaskDataset(BaseDataset):
         if self.transform is not None:
             imgA = self.transform(imgA)
             imgB = self.transform(imgB)
+        if self.opt.input_nc == 1:  # RGB to gray
+            imgA = (imgA[0, ...] * 0.299 + imgA[1, ...] * 0.587 + imgA[2, ...] * 0.114).unsqueeze(0)
+        if self.opt.output_nc == 1:
+            imgB = (imgB[0, ...] * 0.299 + imgB[1, ...] * 0.587 + imgB[2, ...] * 0.114).unsqueeze(0)
 
         idA = fnameA.split('_')[1]
         idB = fnameB.split('_')[1]
@@ -45,6 +49,10 @@ class FaceAgingAgeMaskDataset(BaseDataset):
         maskB = Image.open(os.path.join(self.root_mask, idB)).convert('RGB')
         maskA = self.transform(maskA)
         maskB = self.transform(maskB)
+        if self.opt.input_nc == 1:  # RGB to gray
+            maskA = maskA[0:1, ...]
+        if self.opt.output_nc == 1:
+            maskB = maskB[0:1, ...]
 
         return {'A': imgA, 'B': imgB, 'A_mask': maskA, 'B_mask': maskB, 'A_age': ageA, 'B_age': ageB, 'label': int(line[2]), 'B_paths': B_path}
 

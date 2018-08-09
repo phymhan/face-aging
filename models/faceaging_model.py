@@ -31,6 +31,7 @@ class FaceAgingModel(BaseModel):
             parser.add_argument('--lambda_L1', type=float, default=0.001, help='weight for L1 loss')
             parser.add_argument('--lambda_IP', type=float, default=0.1, help='weight for identity preserving loss')
             parser.add_argument('--lambda_AC', type=float, default=1, help='weight for auxiliary classifier')
+            parser.add_argument('--lambda_A', type=float, default=1, help='weight for cycle consistency loss')
             parser.add_argument('--which_model_netIP', type=str, default='alexnet', help='model type for IP loss')
             parser.add_argument('--which_model_netAC', type=str, default='alexnet', help='model type for AC loss')
             parser.add_argument('--pooling_AC', type=str, default='avg', help='which pooling layer in AC')
@@ -57,9 +58,9 @@ class FaceAgingModel(BaseModel):
         # self.opt.fineSize_AC = self.get_fineSize(self.opt.which_model_netAC)
         self.isTrain = opt.isTrain
         # specify the training losses you want to print out. The program will call base_model.get_current_losses
-        self.loss_names = ['G_GAN', 'G_IP', 'G_L1', 'G_AC', 'D_real_right', 'D_real_wrong', 'D_fake', 'AC_real', 'AC_fake']
+        self.loss_names = ['G_GAN', 'G_IP', 'G_L1', 'G_AC', 'G_cycle', 'D_real_right', 'D_real_wrong', 'D_fake', 'AC_real', 'AC_fake']
         # specify the images you want to save/display. The program will call base_model.get_current_visuals
-        self.visual_names = ['real_A', 'fake_B', 'real_B']
+        self.visual_names = ['real_A', 'fake_B', 'real_B', 'rec_A']
         if self.isTrain:
             self.model_names = ['G', 'D', 'AC']
         else:  # during test time, only load Gs
@@ -104,6 +105,7 @@ class FaceAgingModel(BaseModel):
             else:
                 raise NotImplementedError('Not Implemented')
             self.criterionAC = torch.nn.CrossEntropyLoss()
+            self.criterionCycle = torch.nn.L1Loss()
 
             # initialize optimizers
             self.optimizers = []
@@ -117,7 +119,10 @@ class FaceAgingModel(BaseModel):
         if self.isTrain:
             if self.opt.train_label_pairs:
                 with open(self.opt.train_label_pairs, 'r') as f:
-                    self.opt.train_label_pairs = f.readlines()
+                    train_label_pairs = f.readlines()
+                self.train_label_pairs = [line.rstrip('\n') for line in train_label_pairs]
+            else:
+                self.train_label_pairs = None
 
         self.pre_generate_embeddings()
 
@@ -135,9 +140,9 @@ class FaceAgingModel(BaseModel):
 
     def sample_labels(self):
         # returns label_A, label_B, label_B_not
-        if self.opt.train_label_pairs:
-            idx = self.current_iter % len(self.opt.train_label_pairs)
-            labels_AnB = self.opt.train_label_pairs[idx].rstrip('\n').split()
+        if self.train_label_pairs:
+            idx = self.current_iter % len(self.train_label_pairs)
+            labels_AnB = self.train_label_pairs[idx].split()
         else:
             labels_AnB = random.sample(range(self.opt.num_classes), 2)
         return int(labels_AnB[0]), int(labels_AnB[1]), random.sample(set(range(self.opt.num_classes))-set([int(labels_AnB[1])]), 1)[0]
@@ -164,6 +169,7 @@ class FaceAgingModel(BaseModel):
         self.fake_B = self.netG(self.real_A, self.one_hot_labels[self.label_B])
         self.fake_B_IP = upsample2d(self.fake_B, self.opt.fineSize_IP)
         self.fake_B_AC = upsample2d(self.fake_B, self.opt.fineSize_AC)
+        self.rec_A = self.netG(self.fake_B, self.one_hot_labels[self.label_A])
 
     def backward_D(self):
         # Fake image with label_B
@@ -229,7 +235,10 @@ class FaceAgingModel(BaseModel):
         pred_fake = self.netAC(self.transform_AC(self.fake_B_AC))
         self.loss_G_AC = self.criterionAC(pred_fake, torch.LongTensor([self.label_B]).expand(self.real_A.size(0)).to(self.device)) * self.opt.lambda_AC
 
-        self.loss_G = self.loss_G_GAN + self.loss_G_IP + self.loss_G_L1 + self.loss_G_AC
+        # Cycle loss
+        self.loss_G_cycle = self.criterionCycle(self.rec_A, self.real_A) * self.opt.lambda_A
+
+        self.loss_G = self.loss_G_GAN + self.loss_G_IP + self.loss_G_L1 + self.loss_G_AC + self.loss_G_cycle
 
         self.loss_G.backward()
 
@@ -249,6 +258,7 @@ class FaceAgingModel(BaseModel):
 
         # update G
         self.set_requires_grad(self.netD, False)
+        self.set_requires_grad(self.netAC, False)
         self.optimizer_G.zero_grad()
         self.backward_G()
         self.optimizer_G.step()

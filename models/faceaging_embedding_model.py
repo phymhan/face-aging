@@ -40,6 +40,7 @@ class FaceAgingEmbeddingModel(BaseModel):
             parser.add_argument('--lambda_L1', type=float, default=0.001, help='weight for L1 loss')
             parser.add_argument('--lambda_IP', type=float, default=0.1, help='weight for identity preserving loss')
             parser.add_argument('--lambda_E', type=float, default=1, help='weight for encoder reconstruction loss')
+            parser.add_argument('--lambda_A', type=float, default=1, help='weight for cycle consistency loss')
             parser.add_argument('--which_model_netIP', type=str, default='alexnet', help='model type for IP loss')
             parser.add_argument('--fineSize_IP', type=int, default=224, help='fineSize for IP')
             parser.add_argument('--pretrained_model_path_IP', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to IP net')
@@ -58,9 +59,9 @@ class FaceAgingEmbeddingModel(BaseModel):
         self.opt.num_classes = len(opt.age_binranges)
         self.isTrain = opt.isTrain
         # specify the training losses you want to print out. The program will call base_model.get_current_losses
-        self.loss_names = ['G_GAN', 'G_IP', 'G_L1', 'z_rec', 'D_real_right', 'D_real_wrong', 'D_fake']
+        self.loss_names = ['G_GAN', 'G_IP', 'G_L1', 'G_cycle', 'z_rec', 'D_real_right', 'D_real_wrong', 'D_fake']
         # specify the images you want to save/display. The program will call base_model.get_current_visuals
-        self.visual_names = ['real_A', 'fake_B', 'real_B']
+        self.visual_names = ['real_A', 'fake_B', 'real_B', 'rec_A']
         if self.isTrain:
             self.model_names = ['G', 'D', 'E']
         else:  # during test time, only load Gs
@@ -112,6 +113,7 @@ class FaceAgingEmbeddingModel(BaseModel):
                 self.criterionRec = torch.nn.L1Loss()
             else:
                 raise NotImplementedError('Not Implemented')
+            self.criterionCycle = torch.nn.L1Loss()
 
             # initialize optimizers
             self.optimizers = []
@@ -122,10 +124,10 @@ class FaceAgingEmbeddingModel(BaseModel):
             self.optimizers.append(self.optimizer_D)
             # self.optimizers.append(self.optimizer_E)
 
-        self.embedding_mean = opt.embedding_mean
-        self.embedding_std = opt.embedding_std
-        # self.embedding_normalize = lambda x: (x - opt.embedding_mean[0]) / opt.embedding_std[0]
-        self.embedding_normalize = networks.Normalize(opt.embedding_mean, opt.embedding_std)
+        # self.embedding_mean = opt.embedding_mean
+        # self.embedding_std = opt.embedding_std
+        self.embedding_normalize = lambda x: (x - opt.embedding_mean[0]) / opt.embedding_std[0]
+        # self.embedding_normalize = networks.Normalize(opt.embedding_mean, opt.embedding_std)
 
         if self.isTrain and opt.display_aging_visuals and opt.aging_visual_embedding_path:
             self.pre_generate_embeddings(opt.aging_visual_embedding_path)
@@ -142,7 +144,9 @@ class FaceAgingEmbeddingModel(BaseModel):
         # embeddings should be list of 4-D tensors/arrays (or a 5-D tensor/array)
         embeddings_npy = np.load(npy_file_path)
         for L in range(embeddings_npy.shape[0]):
-            fixed_embeddings.append(self.embedding_normalize(torch.Tensor(embeddings_npy[L]).to(self.device)))
+            fixed_embeddings.append(
+                self.embedding_normalize(torch.Tensor(embeddings_npy[L].reshape([1, 1, 1, 1])).to(self.device))
+            )
         self.fixed_embeddings = fixed_embeddings
 
     def set_input(self, input):
@@ -166,6 +170,7 @@ class FaceAgingEmbeddingModel(BaseModel):
         self.fake_B = self.netG(self.real_A, self.embedding_B)
         self.fake_B_IP = upsample2d(self.fake_B, self.opt.fineSize_IP)
         self.fake_B_E = upsample2d(self.fake_B, self.opt.fineSize_E)
+        self.rec_A = self.netG(self.fake_B, self.embedding_A)
 
     def backward_D(self):
         # Fake image with label_B
@@ -183,14 +188,12 @@ class FaceAgingEmbeddingModel(BaseModel):
         self.loss_D_real_right = self.criterionGAN(pred_real, [1])
 
         if not self.opt.no_trick:
-            # TODO: is this trick necessary?
             # Real_B image with embedding_A
             real_B_embedding_A = torch.cat((self.real_B, expand2d(self.embedding_A, self.opt.fineSize)), 1)
             pred_real = self.netD(real_B_embedding_A)
-            # FIXME: only diff is allowed, or batchSize should be 1
+            # self.loss_D_real_wrong = self.criterionGAN(pred_real, False)
             target_label = [1 if L == 1 else 0 for L in self.label_AB]
             self.loss_D_real_wrong = self.criterionGAN(pred_real, target_label)
-            # self.loss_D_real_wrong = self.criterionGAN(pred_real, [0])
             # Combined loss
             self.loss_D = (self.loss_D_fake + (self.loss_D_real_right + self.loss_D_real_wrong) * 0.5) * 0.5
         else:
@@ -218,12 +221,15 @@ class FaceAgingEmbeddingModel(BaseModel):
         feature_A.requires_grad = False
         self.loss_G_IP = self.criterionIP(self.netIP(self.transform_IP(self.fake_B_IP)), feature_A) * self.opt.lambda_IP
 
+        # Cycle loss
+        self.loss_G_cycle = self.criterionCycle(self.rec_A, self.real_A) * self.opt.lambda_A
+
         # Embedding reconstruction loss
         pred_embedding = self.embedding_normalize(self.netE(self.transform_E(self.fake_B_E)))
         self.loss_z_rec = self.criterionRec(pred_embedding, self.embedding_B.detach()) * self.opt.lambda_E
 
         # Combined loss
-        self.loss_G = self.loss_G_GAN + self.loss_G_IP + self.loss_G_L1 + self.loss_z_rec
+        self.loss_G = self.loss_G_GAN + self.loss_G_IP + self.loss_G_L1 + self.loss_G_cycle + self.loss_z_rec
 
         self.loss_G.backward()
 

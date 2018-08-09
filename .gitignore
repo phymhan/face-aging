@@ -46,4 +46,5 @@ test/.coverage
 test/data/legacy_serialized.pt
 *~
 .idea
-run_exp.sh
+run*.sh
+*/run*.sh
