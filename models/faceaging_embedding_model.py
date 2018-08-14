@@ -50,6 +50,7 @@ class FaceAgingEmbeddingModel(BaseModel):
             parser.add_argument('--no_trick', action='store_true')
             parser.add_argument('--identity_preserving_criterion', type=str, default='mse', help='which criterion to use for identity preserving loss')
             parser.add_argument('--embedding_reconstruction_criterion', type=str, default='mse', help='which criterion to use for embedding reconstruction loss')
+            parser.add_argument('--relabel_D', type=int, nargs='*', default=[0, 1, 0], help='Relabel mapping for Discriminator, 1 for True (label/embedding and image match), 0 for False (don\'t match)')
 
         return parser
 
