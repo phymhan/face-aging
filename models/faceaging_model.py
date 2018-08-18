@@ -27,6 +27,7 @@ class FaceAgingModel(BaseModel):
         parser.add_argument('--norm_G', type=str, default='batch', help='instance normalization or batch normalization')
         parser.add_argument('--norm_D', type=str, default='batch', help='instance normalization or batch normalization')
         parser.add_argument('--embedding_nc', type=int, default=10, help='# of embedding channels')
+        parser.add_argument('--display_aging_visuals', action='store_true', help='display aging visuals if True')
         if is_train:
             parser.add_argument('--lambda_L1', type=float, default=0.001, help='weight for L1 loss')
             parser.add_argument('--lambda_IP', type=float, default=0.1, help='weight for identity preserving loss')
@@ -40,7 +41,6 @@ class FaceAgingModel(BaseModel):
             parser.add_argument('--fineSize_AC', type=int, default=224, help='fineSize for AC')
             parser.add_argument('--pretrained_model_path_IP', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to IP net')
             parser.add_argument('--pretrained_model_path_AC', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to AC net')
-            parser.add_argument('--display_aging_visuals', action='store_true', help='display aging visuals if True')
             parser.add_argument('--train_label_pairs', type=str, default='', help='file path of train label pairs')
             parser.add_argument('--lr_AC', type=float, default=0.0002, help='learning rate for AC')
             parser.add_argument('--no_AC_on_fake', action='store_true', help='do *not* train AC on fake images')
@@ -60,7 +60,10 @@ class FaceAgingModel(BaseModel):
         # specify the training losses you want to print out. The program will call base_model.get_current_losses
         self.loss_names = ['G_GAN', 'G_IP', 'G_L1', 'G_AC', 'G_cycle', 'D_real_right', 'D_real_wrong', 'D_fake', 'AC_real', 'AC_fake']
         # specify the images you want to save/display. The program will call base_model.get_current_visuals
-        self.visual_names = ['real_A', 'fake_B', 'real_B', 'rec_A']
+        if self.isTrain:
+            self.visual_names = ['real_A', 'fake_B', 'real_B', 'rec_A']
+        else:
+            self.visual_names = ['real_A']
         if self.isTrain:
             self.model_names = ['G', 'D', 'AC']
         else:  # during test time, only load Gs
@@ -155,12 +158,16 @@ class FaceAgingModel(BaseModel):
         return size
 
     def set_input(self, input):
-        self.label_A, self.label_B, self.label_B_not = self.sample_labels()
-        self.real_A = input[self.label_A].to(self.device)
-        self.real_B = input[self.label_B].to(self.device)
-        self.real_A_IP = upsample2d(self.real_A, self.opt.fineSize_IP)
-        self.real_B_AC = upsample2d(self.real_B, self.opt.fineSize_AC)
-        self.image_paths = input['path_'+str(self.label_B)]
+        if self.isTrain:
+            self.label_A, self.label_B, self.label_B_not = self.sample_labels()
+            self.real_A = input[self.label_A].to(self.device)
+            self.real_B = input[self.label_B].to(self.device)
+            self.real_A_IP = upsample2d(self.real_A, self.opt.fineSize_IP)
+            self.real_B_AC = upsample2d(self.real_B, self.opt.fineSize_AC)
+            self.image_paths = input['path_'+str(self.label_B)]
+        else:
+            self.real_A = input['A'].to(self.device)
+            self.image_paths = input['A_paths']
         self.current_iter += 1
         self.current_batch_size = int(self.real_A.size(0))
 
@@ -170,6 +177,9 @@ class FaceAgingModel(BaseModel):
         self.fake_B_IP = upsample2d(self.fake_B, self.opt.fineSize_IP)
         self.fake_B_AC = upsample2d(self.fake_B, self.opt.fineSize_AC)
         self.rec_A = self.netG(self.fake_B, self.one_hot_labels[self.label_A])
+
+    def test(self):
+        return
 
     def backward_D(self):
         # Fake image with label_B

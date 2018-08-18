@@ -36,6 +36,8 @@ class FaceAgingEmbeddingModel(BaseModel):
         parser.add_argument('--pretrained_model_path_E', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to E net')
         parser.add_argument('--embedding_mean', type=float, nargs='*', default=[0.0], help='means of embedding')
         parser.add_argument('--embedding_std', type=float, nargs='*', default=[1.0], help='stds of embedding')
+        parser.add_argument('--display_aging_visuals', action='store_true', help='display aging visuals if True')
+        parser.add_argument('--aging_visual_embedding_path', type=str, default='pretrained_models/features.npy', help='pregenerated age embeddings')
         if is_train:
             parser.add_argument('--lambda_L1', type=float, default=0.001, help='weight for L1 loss')
             parser.add_argument('--lambda_IP', type=float, default=0.1, help='weight for identity preserving loss')
@@ -44,8 +46,6 @@ class FaceAgingEmbeddingModel(BaseModel):
             parser.add_argument('--which_model_netIP', type=str, default='alexnet', help='model type for IP loss')
             parser.add_argument('--fineSize_IP', type=int, default=224, help='fineSize for IP')
             parser.add_argument('--pretrained_model_path_IP', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to IP net')
-            parser.add_argument('--display_aging_visuals', action='store_true', help='display aging visuals if True')
-            parser.add_argument('--aging_visual_embedding_path', type=str, default='pretrained_models/features.npy', help='pregenerated age embeddings')
             parser.add_argument('--lr_E', type=float, default=0.0002, help='learning rate for E')
             parser.add_argument('--no_trick', action='store_true')
             parser.add_argument('--identity_preserving_criterion', type=str, default='mse', help='which criterion to use for identity preserving loss')
@@ -62,11 +62,14 @@ class FaceAgingEmbeddingModel(BaseModel):
         # specify the training losses you want to print out. The program will call base_model.get_current_losses
         self.loss_names = ['G_GAN', 'G_IP', 'G_L1', 'G_cycle', 'z_rec', 'D_real_right', 'D_real_wrong', 'D_fake']
         # specify the images you want to save/display. The program will call base_model.get_current_visuals
-        self.visual_names = ['real_A', 'fake_B', 'real_B', 'rec_A']
+        if self.isTrain:
+            self.visual_names = ['real_A', 'fake_B', 'real_B', 'rec_A']
+        else:
+            self.visual_names = ['real_A']
         if self.isTrain:
             self.model_names = ['G', 'D', 'E']
         else:  # during test time, only load Gs
-            self.model_names = ['G', 'E']
+            self.model_names = ['G']  # ['G', 'E']  # if use different test mode
         # load/define networks
         self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.embedding_nc, opt.ngf,
                                       which_model_netG=opt.which_model_netG,
@@ -125,20 +128,21 @@ class FaceAgingEmbeddingModel(BaseModel):
             self.optimizers.append(self.optimizer_D)
             # self.optimizers.append(self.optimizer_E)
 
-        # self.embedding_mean = opt.embedding_mean
-        # self.embedding_std = opt.embedding_std
         self.embedding_normalize = lambda x: (x - opt.embedding_mean[0]) / opt.embedding_std[0]
-        # self.embedding_normalize = networks.Normalize(opt.embedding_mean, opt.embedding_std)
 
-        if self.isTrain and opt.display_aging_visuals and opt.aging_visual_embedding_path:
+        if opt.display_aging_visuals and opt.aging_visual_embedding_path:
             self.pre_generate_embeddings(opt.aging_visual_embedding_path)
 
         if self.isTrain:
             self.transform_IP = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010), self.use_gpu)
         self.transform_E = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010), self.use_gpu)
 
+        if self.isTrain:
+            self.relabel_D = opt.relabel_D
+
         # FIXME: set_requires_grad False, fix me if updating E, see BicycleGAN
-        self.set_requires_grad(self.netE, False)
+        if self.isTrain:
+            self.set_requires_grad(self.netE, False)
 
     def pre_generate_embeddings(self, npy_file_path):
         fixed_embeddings = []
@@ -151,16 +155,20 @@ class FaceAgingEmbeddingModel(BaseModel):
         self.fixed_embeddings = fixed_embeddings
 
     def set_input(self, input):
-        # print(self.label_A, self.label_B, self.label_B_not)
-        self.real_A = input['A'].to(self.device)
-        self.real_B = input['B'].to(self.device)
-        self.real_A_IP = upsample2d(self.real_A, self.opt.fineSize_IP)
-        self.real_A_E = upsample2d(self.real_A, self.opt.fineSize_E)
-        self.real_B_E = upsample2d(self.real_B, self.opt.fineSize_E)
-        self.label_AB = input['label']  # relation between real_A and real_B
-        if self.opt.display_aging_visuals and self.opt.dataset_mode == 'faceaging_embedding_vis':
-            self.aging_visuals_src = [input[L].to(self.device) for L in range(self.opt.num_classes)]
-        self.image_paths = input['B_paths']
+        if self.isTrain:
+            # print(self.label_A, self.label_B, self.label_B_not)
+            self.real_A = input['A'].to(self.device)
+            self.real_B = input['B'].to(self.device)
+            self.real_A_IP = upsample2d(self.real_A, self.opt.fineSize_IP)
+            self.real_A_E = upsample2d(self.real_A, self.opt.fineSize_E)
+            self.real_B_E = upsample2d(self.real_B, self.opt.fineSize_E)
+            self.label_AB = input['label']  # relation between real_A and real_B
+            # if self.opt.display_aging_visuals and self.opt.dataset_mode == 'faceaging_embedding_vis':
+            #     self.aging_visuals_src = [input[L].to(self.device) for L in range(self.opt.num_classes)]
+            self.image_paths = input['B_paths']
+        else:
+            self.real_A = input['A'].to(self.device)
+            self.image_paths = input['A_paths']
         self.current_iter += 1
         self.current_batch_size = int(self.real_A.size(0))
 
@@ -172,6 +180,9 @@ class FaceAgingEmbeddingModel(BaseModel):
         self.fake_B_IP = upsample2d(self.fake_B, self.opt.fineSize_IP)
         self.fake_B_E = upsample2d(self.fake_B, self.opt.fineSize_E)
         self.rec_A = self.netG(self.fake_B, self.embedding_A)
+
+    def test(self):
+        return
 
     def backward_D(self):
         # Fake image with label_B
@@ -193,7 +204,7 @@ class FaceAgingEmbeddingModel(BaseModel):
             real_B_embedding_A = torch.cat((self.real_B, expand2d(self.embedding_A, self.opt.fineSize)), 1)
             pred_real = self.netD(real_B_embedding_A)
             # self.loss_D_real_wrong = self.criterionGAN(pred_real, False)
-            target_label = [1 if L == 1 else 0 for L in self.label_AB]
+            target_label = [self.relabel_D[L] for L in self.label_AB]
             self.loss_D_real_wrong = self.criterionGAN(pred_real, target_label)
             # Combined loss
             self.loss_D = (self.loss_D_fake + (self.loss_D_real_right + self.loss_D_real_wrong) * 0.5) * 0.5
@@ -261,11 +272,12 @@ class FaceAgingEmbeddingModel(BaseModel):
         if self.opt.display_aging_visuals:
             aging_visuals = {}
             for L in range(self.opt.num_classes):
-                if self.opt.dataset_mode == 'faceaging_embedding_vis':
-                    img = upsample2d(self.aging_visuals_src[L], self.opt.fineSize_E)
-                    embedding = self.embedding_normalize(self.netE(self.transform_E(img)))
-                else:
-                    embedding = self.fixed_embeddings[L]
+                # if self.opt.dataset_mode == 'faceaging_embedding_vis':
+                #     img = upsample2d(self.aging_visuals_src[L], self.opt.fineSize_E)
+                #     embedding = self.embedding_normalize(self.netE(self.transform_E(img)))
+                # else:
+                #     embedding = self.fixed_embeddings[L]
+                embedding = self.fixed_embeddings[L]
                 aging_visuals[L] = self.netG(self.real_A[0:1, ...], embedding)
             for L in range(self.opt.num_classes):
                 visual_ret['age_'+str(L)] = aging_visuals[L]

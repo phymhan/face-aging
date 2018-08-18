@@ -1,7 +1,7 @@
 .DS_Store
 debug*
 datasets/
-checkpoints/
+checkpoints*/
 pretrained_models/
 results/
 build/
@@ -48,3 +48,4 @@ test/data/legacy_serialized.pt
 .idea
 run*.sh
 */run*.sh
+run*.md
