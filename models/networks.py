@@ -86,31 +86,31 @@ def init_net(net, init_type='normal', gpu_ids=[]):
 
 
 def define_G(input_nc, output_nc, nz, ngf, which_model_netG='unet_128', norm='batch', nl='relu',
-             use_dropout=False, init_type='xavier', gpu_ids=[], upsample='bilinear'):
+             dropout=0, init_type='xavier', gpu_ids=[], upsample='bilinear'):
     netG = None
     norm_layer = get_norm_layer(norm_type=norm)
     nl_layer = get_non_linearity(layer_type=nl)
 
     if which_model_netG == 'resnet_9blocks':
-        netG = ResnetGenerator(input_nc, output_nc, nz, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
+        netG = ResnetGenerator(input_nc, output_nc, nz, ngf, norm_layer=norm_layer, dropout=dropout, n_blocks=9)
     elif which_model_netG == 'resnet_6blocks':
-        netG = ResnetGenerator(input_nc, output_nc, nz, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
+        netG = ResnetGenerator(input_nc, output_nc, nz, ngf, norm_layer=norm_layer, dropout=dropout, n_blocks=6)
     elif which_model_netG == 'unet_128':
-        netG = UnetGenerator(input_nc, output_nc, nz, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
+        netG = UnetGenerator(input_nc, output_nc, nz, 7, ngf, norm_layer=norm_layer, dropout=dropout)
     elif which_model_netG == 'unet_256':
-        netG = UnetGenerator(input_nc, output_nc, nz, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
+        netG = UnetGenerator(input_nc, output_nc, nz, 8, ngf, norm_layer=norm_layer, dropout=dropout)
     elif which_model_netG == 'unet_128_input':
         netG = G_Unet_add_input(input_nc, output_nc, nz, 7, ngf, norm_layer=norm_layer, nl_layer=nl_layer,
-                                use_dropout=use_dropout, gpu_ids=gpu_ids, upsample=upsample)
+                                dropout=dropout, gpu_ids=gpu_ids, upsample=upsample)
     elif which_model_netG == 'unet_128_all':
         netG = G_Unet_add_all(input_nc, output_nc, nz, 7, ngf, norm_layer=norm_layer, nl_layer=nl_layer,
-                              use_dropout=use_dropout, gpu_ids=gpu_ids, upsample=upsample)
+                              dropout=dropout, gpu_ids=gpu_ids, upsample=upsample)
     elif which_model_netG == 'unet_256_input':
         netG = G_Unet_add_input(input_nc, output_nc, nz, 8, ngf, norm_layer=norm_layer, nl_layer=nl_layer,
-                                use_dropout=use_dropout, gpu_ids=gpu_ids, upsample=upsample)
+                                dropout=dropout, gpu_ids=gpu_ids, upsample=upsample)
     elif which_model_netG == 'unet_256_all':
         netG = G_Unet_add_all(input_nc, output_nc, nz, 8, ngf, norm_layer=norm_layer, nl_layer=nl_layer,
-                              use_dropout=use_dropout, gpu_ids=gpu_ids, upsample=upsample)
+                              dropout=dropout, gpu_ids=gpu_ids, upsample=upsample)
     else:
         raise NotImplementedError('Generator model name [%s] is not recognized' % which_model_netG)
     return init_net(netG, init_type, gpu_ids)
@@ -304,7 +304,7 @@ class GANLoss2(nn.Module):
 # Code and idea originally from Justin Johnson's architecture.
 # https://github.com/jcjohnson/fast-neural-style/
 class ResnetGenerator(nn.Module):
-    def __init__(self, input_nc, output_nc, nz=0, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks=6, padding_type='reflect'):
+    def __init__(self, input_nc, output_nc, nz=0, ngf=64, norm_layer=nn.BatchNorm2d, dropout=0, n_blocks=6, padding_type='reflect'):
         assert(n_blocks >= 0)
         super(ResnetGenerator, self).__init__()
         input_nc = input_nc + nz  # add
@@ -317,8 +317,7 @@ class ResnetGenerator(nn.Module):
             use_bias = norm_layer == nn.InstanceNorm2d
 
         model = [nn.ReflectionPad2d(3),
-                 nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0,
-                           bias=use_bias),
+                 nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=use_bias),
                  norm_layer(ngf),
                  nn.ReLU(True)]
 
@@ -332,7 +331,7 @@ class ResnetGenerator(nn.Module):
 
         mult = 2**n_downsampling
         for i in range(n_blocks):
-            model += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+            model += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, dropout=dropout, use_bias=use_bias)]
 
         for i in range(n_downsampling):
             mult = 2**(n_downsampling - i)
@@ -356,11 +355,11 @@ class ResnetGenerator(nn.Module):
 
 # Define a resnet block
 class ResnetBlock(nn.Module):
-    def __init__(self, dim, padding_type, norm_layer, use_dropout, use_bias):
+    def __init__(self, dim, padding_type, norm_layer, dropout, use_bias):
         super(ResnetBlock, self).__init__()
-        self.conv_block = self.build_conv_block(dim, padding_type, norm_layer, use_dropout, use_bias)
+        self.conv_block = self.build_conv_block(dim, padding_type, norm_layer, dropout, use_bias)
 
-    def build_conv_block(self, dim, padding_type, norm_layer, use_dropout, use_bias):
+    def build_conv_block(self, dim, padding_type, norm_layer, dropout, use_bias):
         conv_block = []
         p = 0
         if padding_type == 'reflect':
@@ -372,11 +371,9 @@ class ResnetBlock(nn.Module):
         else:
             raise NotImplementedError('padding [%s] is not implemented' % padding_type)
 
-        conv_block += [nn.Conv2d(dim, dim, kernel_size=3, padding=p, bias=use_bias),
-                       norm_layer(dim),
-                       nn.ReLU(True)]
-        if use_dropout:
-            conv_block += [nn.Dropout(0.5)]
+        conv_block += [nn.Conv2d(dim, dim, kernel_size=3, padding=p, bias=use_bias), norm_layer(dim), nn.ReLU(True)]
+        if dropout > 0:
+            conv_block += [nn.Dropout(dropout)]
 
         p = 0
         if padding_type == 'reflect':
@@ -387,8 +384,7 @@ class ResnetBlock(nn.Module):
             p = 1
         else:
             raise NotImplementedError('padding [%s] is not implemented' % padding_type)
-        conv_block += [nn.Conv2d(dim, dim, kernel_size=3, padding=p, bias=use_bias),
-                       norm_layer(dim)]
+        conv_block += [nn.Conv2d(dim, dim, kernel_size=3, padding=p, bias=use_bias), norm_layer(dim)]
 
         return nn.Sequential(*conv_block)
 
@@ -402,13 +398,13 @@ class ResnetBlock(nn.Module):
 # if |num_downs| == 7, image of size 128x128 will become of size 1x1
 # at the bottleneck
 class UnetGenerator(nn.Module):
-    def __init__(self, input_nc, output_nc, nz=0, num_downs=7, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False):
+    def __init__(self, input_nc, output_nc, nz=0, num_downs=7, ngf=64, norm_layer=nn.BatchNorm2d, dropout=0):
         super(UnetGenerator, self).__init__()
         input_nc = input_nc + nz  # add
         # construct unet structure
         unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=None, norm_layer=norm_layer, innermost=True)
         for i in range(num_downs - 5):
-            unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=unet_block, norm_layer=norm_layer, use_dropout=use_dropout)
+            unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=unet_block, norm_layer=norm_layer, dropout=dropout)
         unet_block = UnetSkipConnectionBlock(ngf * 4, ngf * 8, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
         unet_block = UnetSkipConnectionBlock(ngf * 2, ngf * 4, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
         unet_block = UnetSkipConnectionBlock(ngf, ngf * 2, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
@@ -427,7 +423,7 @@ class UnetGenerator(nn.Module):
 #   |-- downsampling -- |submodule| -- upsampling --|
 class UnetSkipConnectionBlock(nn.Module):
     def __init__(self, outer_nc, inner_nc, input_nc=None,
-                 submodule=None, outermost=False, innermost=False, norm_layer=nn.BatchNorm2d, use_dropout=False):
+                 submodule=None, outermost=False, innermost=False, norm_layer=nn.BatchNorm2d, dropout=0):
         super(UnetSkipConnectionBlock, self).__init__()
         self.outermost = outermost
         if type(norm_layer) == functools.partial:
@@ -464,8 +460,8 @@ class UnetSkipConnectionBlock(nn.Module):
             down = [downrelu, downconv, downnorm]
             up = [uprelu, upconv, upnorm]
 
-            if use_dropout:
-                model = down + [submodule] + up + [nn.Dropout(0.5)]
+            if dropout > 0:
+                model = down + [submodule] + up + [nn.Dropout(dropout)]
             else:
                 model = down + [submodule] + up
 
@@ -901,7 +897,7 @@ class ResNetFeature(nn.Module):
 # at the bottleneck
 class G_Unet_add_input(nn.Module):
     def __init__(self, input_nc, output_nc, nz, num_downs, ngf=64,
-                 norm_layer=None, nl_layer=None, use_dropout=False,
+                 norm_layer=None, nl_layer=None, dropout=0,
                  gpu_ids=[], upsample='basic'):
         super(G_Unet_add_input, self).__init__()
         self.gpu_ids = gpu_ids
@@ -914,7 +910,7 @@ class G_Unet_add_input(nn.Module):
                                innermost=True, norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
         for _ in range(num_downs - 5):
             unet_block = UnetBlock(ngf*max_nchn, ngf * max_nchn, ngf * max_nchn, unet_block,
-                                   norm_layer=norm_layer, nl_layer=nl_layer, use_dropout=use_dropout, upsample=upsample)
+                                   norm_layer=norm_layer, nl_layer=nl_layer, dropout=dropout, upsample=upsample)
         unet_block = UnetBlock(ngf*4, ngf * 4, ngf * max_nchn, unet_block, norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
         unet_block = UnetBlock(ngf*2, ngf * 2, ngf * 4, unet_block, norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
         unet_block = UnetBlock(ngf, ngf, ngf * 2, unet_block, norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
@@ -950,7 +946,7 @@ def upsampleLayer(inplanes, outplanes, upsample='basic', padding_type='zero'):
 class UnetBlock(nn.Module):
     def __init__(self, input_nc, outer_nc, inner_nc,
                  submodule=None, outermost=False, innermost=False,
-                 norm_layer=None, nl_layer=None, use_dropout=False, upsample='basic', padding_type='zero'):
+                 norm_layer=None, nl_layer=None, dropout=0, upsample='basic', padding_type='zero'):
         super(UnetBlock, self).__init__()
         self.outermost = outermost
         p = 0
@@ -990,8 +986,8 @@ class UnetBlock(nn.Module):
             if upnorm is not None:
                 up += [upnorm]
 
-            if use_dropout:
-                model = down + [submodule] + up + [nn.Dropout(0.5)]
+            if dropout > 0:
+                model = down + [submodule] + up + [nn.Dropout(dropout)]
             else:
                 model = down + [submodule] + up
         self.model = nn.Sequential(*model)
@@ -1075,7 +1071,7 @@ class BasicBlock(nn.Module):
 # at the bottleneck
 class G_Unet_add_all(nn.Module):
     def __init__(self, input_nc, output_nc, nz, num_downs, ngf=64,
-                 norm_layer=None, nl_layer=None, use_dropout=False, gpu_ids=[], upsample='basic'):
+                 norm_layer=None, nl_layer=None, dropout=0, gpu_ids=[], upsample='basic'):
         super(G_Unet_add_all, self).__init__()
         self.gpu_ids = gpu_ids
         self.nz = nz
@@ -1083,10 +1079,10 @@ class G_Unet_add_all(nn.Module):
         unet_block = UnetBlock_with_z(ngf*8, ngf * 8, ngf * 8, nz, None, innermost=True,
                                       norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
         unet_block = UnetBlock_with_z(ngf*8, ngf * 8, ngf * 8, nz, unet_block,
-                                      norm_layer=norm_layer, nl_layer=nl_layer, use_dropout=use_dropout, upsample=upsample)
+                                      norm_layer=norm_layer, nl_layer=nl_layer, dropout=dropout, upsample=upsample)
         for i in range(num_downs - 6):
             unet_block = UnetBlock_with_z(ngf*8, ngf * 8, ngf * 8, nz, unet_block,
-                                          norm_layer=norm_layer, nl_layer=nl_layer, use_dropout=use_dropout, upsample=upsample)
+                                          norm_layer=norm_layer, nl_layer=nl_layer, dropout=dropout, upsample=upsample)
         unet_block = UnetBlock_with_z(ngf*4, ngf * 4, ngf * 8, nz, unet_block, norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
         unet_block = UnetBlock_with_z(ngf*2, ngf * 2, ngf * 4, nz, unet_block, norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
         unet_block = UnetBlock_with_z(ngf, ngf, ngf * 2, nz, unet_block, norm_layer=norm_layer, nl_layer=nl_layer, upsample=upsample)
@@ -1100,7 +1096,7 @@ class G_Unet_add_all(nn.Module):
 class UnetBlock_with_z(nn.Module):
     def __init__(self, input_nc, outer_nc, inner_nc, nz=0,
                  submodule=None, outermost=False, innermost=False,
-                 norm_layer=None, nl_layer=None, use_dropout=False, upsample='basic', padding_type='zero'):
+                 norm_layer=None, nl_layer=None, dropout=0, upsample='basic', padding_type='zero'):
         super(UnetBlock_with_z, self).__init__()
         p = 0
         downconv = []
@@ -1141,8 +1137,8 @@ class UnetBlock_with_z(nn.Module):
             if norm_layer is not None:
                 up += [norm_layer(outer_nc)]
 
-            if use_dropout:
-                up += [nn.Dropout(0.5)]
+            if dropout > 0:
+                up += [nn.Dropout(dropout)]
         self.down = nn.Sequential(*down)
         self.submodule = submodule
         self.up = nn.Sequential(*up)

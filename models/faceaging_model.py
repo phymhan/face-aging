@@ -71,7 +71,7 @@ class FaceAgingModel(BaseModel):
         # load/define networks
         self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.embedding_nc, opt.ngf,
                                       which_model_netG=opt.which_model_netG,
-                                      norm=opt.norm_G, nl=opt.nl, use_dropout=opt.use_dropout, init_type=opt.init_type,
+                                      norm=opt.norm_G, nl=opt.nl, dropout=opt.dropout, init_type=opt.init_type,
                                       gpu_ids=self.gpu_ids, upsample=opt.upsample)
 
         if self.isTrain:

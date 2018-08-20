@@ -90,7 +90,8 @@ def upsample2d(inputTensor, targetSize):
     if inputTensor.size(2) == targetSize:
         return inputTensor
     else:
-        return torch.nn.Upsample(size=(targetSize, targetSize), mode='bilinear', align_corners=True)(inputTensor)
+        # return torch.nn.Upsample(size=(targetSize, targetSize), mode='bilinear', align_corners=True)(inputTensor)
+        return torch.nn.functional.interpolate(input=inputTensor, size=(targetSize, targetSize), mode='bilinear', align_corners=True)
 
 
 def expand2d(inputTensor, targetSize):

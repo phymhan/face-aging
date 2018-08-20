@@ -51,6 +51,8 @@ class FaceAgingEmbeddingModel(BaseModel):
             parser.add_argument('--identity_preserving_criterion', type=str, default='mse', help='which criterion to use for identity preserving loss')
             parser.add_argument('--embedding_reconstruction_criterion', type=str, default='mse', help='which criterion to use for embedding reconstruction loss')
             parser.add_argument('--relabel_D', type=int, nargs='*', default=[0, 1, 0], help='Relabel mapping for Discriminator, 1 for True (label/embedding and image match), 0 for False (don\'t match)')
+            parser.add_argument('--no_mixed_label_D', action='store_true', help='if True, use same label within one batch (all A < B or all A > B)')
+            parser.add_argument('--weight_label_D', nargs='*', type=float, default=[0.5, 0, 0.5], help='weight for random sample label for D')
 
         return parser
 
@@ -73,7 +75,7 @@ class FaceAgingEmbeddingModel(BaseModel):
         # load/define networks
         self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.embedding_nc, opt.ngf,
                                       which_model_netG=opt.which_model_netG,
-                                      norm=opt.norm_G, nl=opt.nl, use_dropout=opt.use_dropout, init_type=opt.init_type,
+                                      norm=opt.norm_G, nl=opt.nl, dropout=opt.dropout, init_type=opt.init_type,
                                       gpu_ids=self.gpu_ids, upsample=opt.upsample)
 
         if self.isTrain:
@@ -139,6 +141,11 @@ class FaceAgingEmbeddingModel(BaseModel):
 
         if self.isTrain:
             self.relabel_D = opt.relabel_D
+            if len(opt.weight_label_D) > 0:
+                assert(len(opt.weight_label_D) == len(opt.relabel_D))
+                self.weight_label_D = [w / sum(opt.weight_label_D) for w in opt.weight_label_D]
+            else:
+                self.weight_label_D = None
 
         # FIXME: set_requires_grad False, fix me if updating E, see BicycleGAN
         if self.isTrain:
@@ -156,16 +163,22 @@ class FaceAgingEmbeddingModel(BaseModel):
 
     def set_input(self, input):
         if self.isTrain:
-            # print(self.label_A, self.label_B, self.label_B_not)
-            self.real_A = input['A'].to(self.device)
-            self.real_B = input['B'].to(self.device)
+            if not self.opt.no_mixed_label_D:
+                self.real_A = input['A'].to(self.device)
+                self.real_B = input['B'].to(self.device)
+                self.image_paths = input['B_paths']
+                self.label_AB = input['label']  # relation between real_A and real_B
+            else:
+                # sample a label for D (A < B or A > B)
+                self.label_AB = [np.random.choice(range(len(self.relabel_D)), p=self.weight_label_D)]
+                self.real_A = input[str(self.label_AB[0]) + '_A'].to(self.device)
+                self.real_B = input[str(self.label_AB[0]) + '_B'].to(self.device)
+                self.image_paths = input[str(self.label_AB[0]) + '_B_paths']
             self.real_A_IP = upsample2d(self.real_A, self.opt.fineSize_IP)
             self.real_A_E = upsample2d(self.real_A, self.opt.fineSize_E)
             self.real_B_E = upsample2d(self.real_B, self.opt.fineSize_E)
-            self.label_AB = input['label']  # relation between real_A and real_B
             # if self.opt.display_aging_visuals and self.opt.dataset_mode == 'faceaging_embedding_vis':
             #     self.aging_visuals_src = [input[L].to(self.device) for L in range(self.opt.num_classes)]
-            self.image_paths = input['B_paths']
         else:
             self.real_A = input['A'].to(self.device)
             self.image_paths = input['A_paths']

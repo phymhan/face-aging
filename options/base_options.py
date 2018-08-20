@@ -37,7 +37,7 @@ class BaseOptions():
         parser.add_argument('--display_id', type=int, default=1, help='window id of the web display')
         parser.add_argument('--display_server', type=str, default="http://localhost", help='visdom server of the web display')
         parser.add_argument('--display_port', type=int, default=8097, help='visdom port of the web display')
-        parser.add_argument('--no_dropout', action='store_true', help='no dropout for the generator')
+        parser.add_argument('--dropout', type=float, default=0, help='probability of an element to be zero-ed for the generator')
         parser.add_argument('--max_dataset_size', type=int, default=float("inf"), help='Maximum number of samples allowed per dataset. If the dataset directory contains more than max_dataset_size, only a subset is loaded.')
         parser.add_argument('--resize_or_crop', type=str, default='resize_and_crop', help='scaling and cropping of images at load time [resize_and_crop|crop|scale_width|scale_width_and_crop]')
         parser.add_argument('--no_flip', action='store_true', help='if specified, do not flip the images for data augmentation')
@@ -47,10 +47,8 @@ class BaseOptions():
         parser.add_argument('--age_binranges', nargs='+', type=float, default=[1, 11, 21, 31, 41, 51, 61, 71, 81, 91],
                             help='list of bins, the (i+1)-th group is in the range [age_binranges[i], age_binranges[i+1]), e.g. [1, 11, 21, ..., 101], the 1-st group is [1, 10], the 9-th [91, 100], however, the 10-th [101, +inf)')
         parser.add_argument('--num_Ds', type=int, default=2, help='number of Discrminators')
-        # if use_add is True
         parser.add_argument('--nl', type=str, default='relu', help='non-linearity activation: relu | lrelu | elu')
         parser.add_argument('--upsample', type=str, default='basic', help='basic | bilinear')
-        parser.add_argument('--use_dropout', action='store_true', help='use dropout for the generator')
         self.initialized = True
         return parser
 
