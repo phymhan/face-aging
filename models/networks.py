@@ -171,19 +171,22 @@ def define_AC(which_model_netAC, input_nc=3, init_type='normal', num_classes=0, 
 
 
 # define Auxiliary Regression Network
-def define_AR(which_model_netAR, input_nc=3, init_type='normal', num_classes=0, pooling='avg', dropout=0.5, gpu_ids=[]):
-    netAC = None
+def define_AR(which_model_netAR, input_nc=3, init_type='kaiming', pooling='max',
+              cnn_dim=[], cnn_pad=1, cnn_relu_slope=0.2, gpu_ids=[]):
+    # Encoder is a Regression Network
+    netAR = None
 
-    if which_model_netAC == 'alexnet':
-        netAC = AlexNet(input_nc=input_nc, num_classes=num_classes)
-    elif which_model_netAC == 'alexnet_lite':
-        netAC = AlexNetLite(input_nc=input_nc, num_classes=num_classes, pooling=pooling, dropout=dropout)
-    elif 'resnet' in which_model_netAC:
-        netAC = ResNet(input_nc=input_nc, num_classes=num_classes, which_model=which_model_netAC)
+    if which_model_netAR == 'alexnet':
+        base = AlexNetFeature(input_nc=input_nc, pooling='None')
+    elif 'resnet' in which_model_netAR:
+        base = ResNetFeature(input_nc=input_nc, which_model=which_model_netAR)
     else:
-        raise NotImplementedError('Auxiliary classifier name [%s] is not recognized' % which_model_netAC)
+        raise NotImplementedError('Model [%s] is not implemented.' % which_model_netAR)
 
-    return init_net(netAC, init_type, gpu_ids)
+    # define Regression Network
+    netAR = RegressionNetwork(base, pooling=pooling, cnn_dim=cnn_dim, cnn_pad=cnn_pad, cnn_relu_slope=cnn_relu_slope)
+
+    return init_net(netAR, init_type, gpu_ids)
 
 
 # define Embedding Encoder
@@ -660,6 +663,47 @@ class SiameseFeature(nn.Module):
             if key.startswith('cxn') or key.startswith('fc'):
                 state_dict.pop(key)
         self.load_state_dict(state_dict, strict=True)
+
+
+# RegressionNetwork is almost a SiameseFeature Network but with different load_pretrained function
+class RegressionNetwork(nn.Module):
+    def __init__(self, base=None, pooling='avg', cnn_dim=[], cnn_pad=1, cnn_relu_slope=0.2):
+        super(RegressionNetwork, self).__init__()
+        self.pooling = pooling
+        self.base = base
+        if cnn_dim:
+            conv_block = []
+            nf_prev = base.feature_dim
+            for i in range(len(cnn_dim)-1):
+                nf = cnn_dim[i]
+                conv_block += [
+                    nn.Conv2d(nf_prev, nf, kernel_size=3, stride=1, padding=cnn_pad, bias=True),
+                    nn.BatchNorm2d(nf),
+                    nn.LeakyReLU(cnn_relu_slope)
+                ]
+                nf_prev = nf
+            conv_block += [nn.Conv2d(nf_prev, cnn_dim[-1], kernel_size=3, stride=1, padding=cnn_pad, bias=True)]
+            self.cnn = nn.Sequential(*conv_block)
+            feature_dim = cnn_dim[-1]
+        else:
+            self.cnn = None
+            feature_dim = base.feature_dim
+        self.feature_dim = feature_dim
+
+    def forward(self, x):
+        output = self.base.forward(x)
+        if self.cnn:
+            output = self.cnn(output)
+        if self.pooling == 'avg':
+            output = nn.AvgPool2d(output.size(2))(output)
+        elif self.pooling == 'max':
+            output = nn.MaxPool2d(output.size(2))(output)
+        return output
+
+    def load_pretrained(self, state_dict):
+        # used when loading pretrained base model
+        # warning: self.cnn won't be initialized
+        self.base.load_pretrained(state_dict)
 
 
 class AlexNet(nn.Module):

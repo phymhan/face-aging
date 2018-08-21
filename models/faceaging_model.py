@@ -24,7 +24,7 @@ class FaceAgingModel(BaseModel):
         parser.set_defaults(norm='batch')
         parser.set_defaults(dataset_mode='aligned')
         parser.set_defaults(which_model_netG='unet_256')
-        parser.add_argument('--norm_G', type=str, default='batch', help='instance normalization or batch normalization')
+        parser.add_argument('--norm_G', type=str, default='instance', help='instance normalization or batch normalization')
         parser.add_argument('--norm_D', type=str, default='batch', help='instance normalization or batch normalization')
         parser.add_argument('--embedding_nc', type=int, default=10, help='# of embedding channels')
         parser.add_argument('--display_aging_visuals', action='store_true', help='display aging visuals if True')
@@ -43,7 +43,7 @@ class FaceAgingModel(BaseModel):
             parser.add_argument('--pretrained_model_path_AC', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to AC net')
             parser.add_argument('--train_label_pairs', type=str, default='', help='file path of train label pairs')
             parser.add_argument('--lr_AC', type=float, default=0.0002, help='learning rate for AC')
-            parser.add_argument('--no_AC_on_fake', action='store_true', help='do *not* train AC on fake images')
+            parser.add_argument('--train_aux_on_fake', action='store_true', help='if True, train AC on fake images')
             parser.add_argument('--no_trick', action='store_true')
             parser.add_argument('--identity_preserving_criterion', type=str, default='mse', help='which criterion to use for identity preserving loss')
 
@@ -54,8 +54,7 @@ class FaceAgingModel(BaseModel):
         assert(opt.input_nc == opt.output_nc)
         self.opt.num_classes = len(opt.age_binranges)
         assert(opt.embedding_nc == self.opt.num_classes)
-        # self.opt.fineSize_IP = self.get_fineSize(self.opt.which_model_netIP)
-        # self.opt.fineSize_AC = self.get_fineSize(self.opt.which_model_netAC)
+
         self.isTrain = opt.isTrain
         # specify the training losses you want to print out. The program will call base_model.get_current_losses
         self.loss_names = ['G_GAN', 'G_IP', 'G_L1', 'G_AC', 'G_cycle', 'D_real_right', 'D_real_wrong', 'D_fake', 'AC_real', 'AC_fake']
@@ -151,13 +150,6 @@ class FaceAgingModel(BaseModel):
             labels_AnB = random.sample(range(self.opt.num_classes), 2)
         return int(labels_AnB[0]), int(labels_AnB[1]), random.sample(set(range(self.opt.num_classes))-set([int(labels_AnB[1])]), 1)[0]
 
-    def get_fineSize(self, which_model='alexnet'):
-        size = None
-        if 'alexnet' in which_model:
-            size = 224
-        print('fineSize for model [%s]: %d' % (which_model, size))
-        return size
-
     def set_input(self, input):
         if self.isTrain:
             self.label_A, self.label_B, self.label_B_not = self.sample_labels()
@@ -215,7 +207,7 @@ class FaceAgingModel(BaseModel):
         self.loss_AC_real = self.criterionAC(pred, torch.LongTensor([self.label_B]).expand(self.real_A.size(0)).to(self.device))
 
         # Fake
-        if not self.opt.no_AC_on_fake:
+        if self.opt.train_aux_on_fake:
             pred = self.netAC(self.transform_AC(self.fake_B_AC.detach()))
             self.loss_AC_fake = self.criterionAC(pred, torch.LongTensor([self.label_B]).expand(self.real_A.size(0)).to(self.device))
         else:

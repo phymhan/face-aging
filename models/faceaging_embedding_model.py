@@ -24,7 +24,7 @@ class FaceAgingEmbeddingModel(BaseModel):
         parser.set_defaults(norm='batch')
         parser.set_defaults(dataset_mode='aligned')
         parser.set_defaults(which_model_netG='unet_256')
-        parser.add_argument('--norm_G', type=str, default='batch', help='instance normalization or batch normalization')
+        parser.add_argument('--norm_G', type=str, default='instance', help='instance normalization or batch normalization')
         parser.add_argument('--norm_D', type=str, default='batch', help='instance normalization or batch normalization')
         parser.add_argument('--embedding_nc', type=int, default=10, help='# of embedding channels')
         parser.add_argument('--which_model_netE', type=str, default='alexnet', help='model type for E loss')
