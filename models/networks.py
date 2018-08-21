@@ -234,69 +234,40 @@ def define_S(which_model_netS, input_nc=3, init_type='kaiming', num_classes=3, p
 #         return self.loss(input, target_tensor)
 
 
-# GANLoss borrowed from BicycleGAN
-class GANLoss(nn.Module):
-    def __init__(self, mse_loss=True, target_real_label=1.0, target_fake_label=0.0,
-                 tensor=torch.FloatTensor):
-        super(GANLoss, self).__init__()
-        self.real_label = target_real_label
-        self.fake_label = target_fake_label
-        self.real_label_var = None
-        self.fake_label_var = None
-        self.Tensor = tensor
-        if mse_loss:
-            self.loss = nn.MSELoss()
-        else:
-            self.loss = nn.BCELoss()
-
-    def get_target_tensor(self, input, target_is_real):
-        target_tensor = None
-        if target_is_real:
-            create_label = ((self.real_label_var is None) or
-                            (self.real_label_var.numel() != input.numel()))
-            if create_label:
-                real_tensor = self.Tensor(input.size()).fill_(self.real_label)
-                self.real_label_var = real_tensor.cuda()
-            target_tensor = self.real_label_var
-        else:
-            create_label = ((self.fake_label_var is None) or
-                            (self.fake_label_var.numel() != input.numel()))
-            if create_label:
-                fake_tensor = self.Tensor(input.size()).fill_(self.fake_label)
-                self.fake_label_var = fake_tensor.cuda()
-            target_tensor = self.fake_label_var
-        return target_tensor
-
-    def __call__(self, inputs, target_is_real):
-        # if input is a list
-        loss = 0.0
-        all_losses = []
-        for input in inputs:
-            target_tensor = self.get_target_tensor(input, target_is_real)
-            loss_input = self.loss(input, target_tensor)
-            loss = loss + loss_input
-            all_losses.append(loss_input)
-            # st()
-        return loss  #, all_losses
-
-
 # Allows mix of True (1) and False (0) in a batch
-class GANLoss2(nn.Module):
-    def __init__(self, use_lsgan=True):
-        super(GANLoss2, self).__init__()
+class GANLoss(nn.Module):
+    def __init__(self, use_lsgan=True, tensor=torch.FloatTensor):
+        super(GANLoss, self).__init__()
         if use_lsgan:
             self.loss = nn.MSELoss()
         else:
             self.loss = nn.BCELoss()
+        self.Tensor = tensor
 
     def get_target_tensor(self, input, target_label):
-        # FIXME: hardcoded cuda()
-        target_tensor = torch.Tensor(np.array(target_label).reshape(len(target_label), 1, 1, 1)).cuda()
+        # target_label is a list indexed along batch
+        if not isinstance(target_label, list):
+            target_label = [target_label]
+        target_label_new = []
+        for target_label_item in target_label:
+            if isinstance(target_label_item, bool):
+                target_label_item = 1 if target_label_item else 0
+            target_label_new.append(target_label_item)
+        target_tensor = self.Tensor(np.array(target_label_new).reshape(len(target_label_new), 1, 1, 1))
         return target_tensor.expand_as(input)
 
-    def __call__(self, input, target_label):
-        target_tensor = self.get_target_tensor(input, target_label)
-        return self.loss(input, target_tensor)
+    def __call__(self, inputs, target_label):
+        if not isinstance(inputs, list):
+            inputs = [inputs]
+        # if input is a list
+        loss = 0.0
+        all_losses = []
+        for input in inputs:
+            target_tensor = self.get_target_tensor(input, target_label)
+            loss_input = self.loss(input, target_tensor)
+            loss += loss_input
+            all_losses.append(loss_input)
+        return loss
 
 
 # Defines the generator that consists of Resnet blocks between a few
@@ -1328,20 +1299,16 @@ class IdentityMapping(nn.Module):
 
 # Channel-wise normalization, similar to torchvision.transforms.Normalize but performed on a 4-D tensor
 class Normalize(nn.Module):
-    def __init__(self, mean=[], std=[], use_gpu=True):
+    def __init__(self, mean=[], std=[]):
         super(Normalize, self).__init__()
         self.nc = len(mean)
-        self.use_gpu = use_gpu
         self.identity_mapping = mean or std  # either one is empty
         if not self.identity_mapping:
-            mean_tensor = torch.Tensor(np.array(mean).view([1, self.nc, 1, 1]))
-            std_tensor = torch.Tensor(np.array(std).view([1, self.nc, 1, 1]))
+            mean_tensor = self.Tensor(np.array(mean).view([1, self.nc, 1, 1]))
+            std_tensor = self.Tensor(np.array(std).view([1, self.nc, 1, 1]))
             # mean and std adjusted here, since image is pre-normalized to [-1, 1] instead of [0, 1]
             mean_tensor = 2 * mean_tensor - 1
             std_tensor = 2 * std_tensor
-            if use_gpu:
-                mean_tensor = mean_tensor.cuda()
-                std_tensor = std_tensor.cuda()
             self.register_buffer('mean', mean_tensor)
             self.register_buffer('std', std_tensor)
 

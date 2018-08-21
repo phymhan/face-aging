@@ -105,7 +105,8 @@ class FaceAgingEmbeddingModel(BaseModel):
             assert(opt.pool_size == 0)
             self.fake_B_pool = [ImagePool(opt.pool_size) for _ in range(self.opt.num_classes)]
             # define loss functions
-            self.criterionGAN = networks.GANLoss2(use_lsgan=not opt.no_lsgan).to(self.device)
+            # self.criterionGAN = networks.GANLoss(use_lsgan=not opt.no_lsgan).to(self.device)
+            self.criterionGAN = networks.GANLoss(use_lsgan=not opt.no_lsgan, tensor=self.Tensor)
             self.criterionL1 = torch.nn.L1Loss()
             if opt.identity_preserving_criterion.lower() == 'mse':
                 self.criterionIP = torch.nn.MSELoss()
@@ -136,8 +137,8 @@ class FaceAgingEmbeddingModel(BaseModel):
             self.pre_generate_embeddings(opt.aging_visual_embedding_path)
 
         if self.isTrain:
-            self.transform_IP = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010), self.use_gpu)
-        self.transform_E = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010), self.use_gpu)
+            self.transform_IP = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)).to(self.device)
+        self.transform_E = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)).to(self.device)
 
         if self.isTrain:
             self.relabel_D = opt.relabel_D
@@ -203,20 +204,17 @@ class FaceAgingEmbeddingModel(BaseModel):
         # TODO: query from pool
         fake_B = torch.cat((self.fake_B, expand2d(self.embedding_B, self.opt.fineSize)), 1)
         pred_fake = self.netD(fake_B.detach())
-        # self.loss_D_fake = self.criterionGAN(pred_fake, False)
-        self.loss_D_fake = self.criterionGAN(pred_fake, [0])
+        self.loss_D_fake = self.criterionGAN(pred_fake, False)
 
         # Real_B image with embedding_B
         real_B_embedding_B = torch.cat((self.real_B, expand2d(self.embedding_B, self.opt.fineSize)), 1)
         pred_real = self.netD(real_B_embedding_B)
-        # self.loss_D_real_right = self.criterionGAN(pred_real, True)
-        self.loss_D_real_right = self.criterionGAN(pred_real, [1])
+        self.loss_D_real_right = self.criterionGAN(pred_real, True)
 
         if not self.opt.no_trick:
             # Real_B image with embedding_A
             real_B_embedding_A = torch.cat((self.real_B, expand2d(self.embedding_A, self.opt.fineSize)), 1)
             pred_real = self.netD(real_B_embedding_A)
-            # self.loss_D_real_wrong = self.criterionGAN(pred_real, False)
             target_label = [self.relabel_D[L] for L in self.label_AB]
             self.loss_D_real_wrong = self.criterionGAN(pred_real, target_label)
             # Combined loss
@@ -232,8 +230,7 @@ class FaceAgingEmbeddingModel(BaseModel):
         # First, G(A) should fake the discriminator
         fake_B = torch.cat((self.fake_B, expand2d(self.embedding_B, self.opt.fineSize)), 1)
         pred_fake = self.netD(fake_B)
-        # self.loss_G_GAN = self.criterionGAN(pred_fake, True)
-        self.loss_G_GAN = self.criterionGAN(pred_fake, [1])
+        self.loss_G_GAN = self.criterionGAN(pred_fake, True)
 
         # L1: fake_B ~= real_A
         if self.opt.lambda_L1 > 0.0:

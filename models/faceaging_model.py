@@ -99,7 +99,8 @@ class FaceAgingModel(BaseModel):
             # TODO: use num_classes pools
             self.fake_B_pool = [ImagePool(opt.pool_size) for _ in range(self.opt.num_classes)]
             # define loss functions
-            self.criterionGAN = networks.GANLoss(mse_loss=not opt.no_lsgan).to(self.device)
+            # self.criterionGAN = networks.GANLoss(use_lsgan=not opt.no_lsgan).to(self.device)
+            self.criterionGAN = networks.GANLoss(use_lsgan=not opt.no_lsgan, tensor=self.Tensor)
             self.criterionL1 = torch.nn.L1Loss()
             if opt.identity_preserving_criterion.lower() == 'mse':
                 self.criterionIP = torch.nn.MSELoss()
@@ -130,8 +131,8 @@ class FaceAgingModel(BaseModel):
         self.pre_generate_embeddings()
 
         if self.isTrain:
-            self.transform_IP = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010), self.use_gpu)
-            self.transform_AC = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010), self.use_gpu)
+            self.transform_IP = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)).to(self.device)
+            self.transform_AC = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)).to(self.device)
 
     def pre_generate_embeddings(self):
         one_hot_labels = []
