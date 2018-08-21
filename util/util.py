@@ -102,3 +102,29 @@ def expand2d(inputTensor, targetSize):
 def expand2d_as(inputTensor, targetTensor):
     # expand a 4d tensor along axis 0, 2 and 3 to those of targetTensor
     return inputTensor.expand(targetTensor.size(0), inputTensor.size(1), targetTensor.size(2), targetTensor.size(3))
+
+
+# online mean and std, borrowed from https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
+# for a new value newValue, compute the new count, new mean, the new M2.
+# mean accumulates the mean of the entire dataset
+# M2 aggregates the squared distance from the mean
+# count aggregates the number of samples seen so far
+def update(existingAggregate, newValue):
+    (count, mean, M2) = existingAggregate
+    count = count + 1
+    delta = newValue - mean
+    mean = mean + delta / count
+    delta2 = newValue - mean
+    M2 = M2 + delta * delta2
+
+    return (count, mean, M2)
+
+
+# retrieve the mean, variance and sample variance from an aggregate
+def finalize(existingAggregate):
+    (count, mean, M2) = existingAggregate
+    (mean, variance, sampleVariance) = (mean, M2/count, M2/(count - 1))
+    if count < 2:
+        return float('nan')
+    else:
+        return (mean, variance, sampleVariance)

@@ -85,6 +85,7 @@ def init_net(net, init_type='normal', gpu_ids=[]):
     return net
 
 
+# define Generator
 def define_G(input_nc, output_nc, nz, ngf, which_model_netG='unet_128', norm='batch', nl='relu',
              dropout=0, init_type='xavier', gpu_ids=[], upsample='bilinear'):
     netG = None
@@ -116,6 +117,7 @@ def define_G(input_nc, output_nc, nz, ngf, which_model_netG='unet_128', norm='ba
     return init_net(netG, init_type, gpu_ids)
 
 
+# define Discriminator
 def define_D(input_nc, ndf, which_model_netD,
              n_layers_D=3, norm='batch', use_sigmoid=False, init_type='normal', num_Ds=1, gpu_ids=[]):
     netD = None
@@ -136,6 +138,7 @@ def define_D(input_nc, ndf, which_model_netD,
     return init_net(netD, init_type, gpu_ids)
 
 
+# define Identity-Preserving Network
 def define_IP(which_model_netIP, input_nc, gpu_ids=[]):
     netIP = None
 
@@ -151,6 +154,7 @@ def define_IP(which_model_netIP, input_nc, gpu_ids=[]):
     return netIP  # do not init weights netIP here, weights will be reloaded anyways
 
 
+# define Auxiliary Classifier
 def define_AC(which_model_netAC, input_nc=3, init_type='normal', num_classes=0, pooling='avg', dropout=0.5, gpu_ids=[]):
     netAC = None
 
@@ -161,14 +165,31 @@ def define_AC(which_model_netAC, input_nc=3, init_type='normal', num_classes=0, 
     elif 'resnet' in which_model_netAC:
         netAC = ResNet(input_nc=input_nc, num_classes=num_classes, which_model=which_model_netAC)
     else:
-        raise NotImplementedError('Auxiliary classifier name [%s] is not recognized' % which_model_netIP)
+        raise NotImplementedError('Auxiliary classifier name [%s] is not recognized' % which_model_netAC)
 
     return init_net(netAC, init_type, gpu_ids)
 
 
+# define Auxiliary Regression Network
+def define_AR(which_model_netAR, input_nc=3, init_type='normal', num_classes=0, pooling='avg', dropout=0.5, gpu_ids=[]):
+    netAC = None
+
+    if which_model_netAC == 'alexnet':
+        netAC = AlexNet(input_nc=input_nc, num_classes=num_classes)
+    elif which_model_netAC == 'alexnet_lite':
+        netAC = AlexNetLite(input_nc=input_nc, num_classes=num_classes, pooling=pooling, dropout=dropout)
+    elif 'resnet' in which_model_netAC:
+        netAC = ResNet(input_nc=input_nc, num_classes=num_classes, which_model=which_model_netAC)
+    else:
+        raise NotImplementedError('Auxiliary classifier name [%s] is not recognized' % which_model_netAC)
+
+    return init_net(netAC, init_type, gpu_ids)
+
+
+# define Embedding Encoder
 def define_E(which_model_netE, input_nc=3, init_type='kaiming', pooling='max',
              cnn_dim=[], cnn_pad=1, cnn_relu_slope=0.2, gpu_ids=[]):
-    # Encoder is a Siamese Network
+    # Encoder is a Siamese Feature Network
     netE = None
 
     if which_model_netE == 'alexnet':
@@ -176,14 +197,15 @@ def define_E(which_model_netE, input_nc=3, init_type='kaiming', pooling='max',
     elif 'resnet' in which_model_netE:
         base = ResNetFeature(input_nc=input_nc, which_model=which_model_netE)
     else:
-        raise NotImplementedError('Model [%s] is not implemented.' % opt.which_model)
+        raise NotImplementedError('Model [%s] is not implemented.' % which_model_netE)
 
-    # define Siamese Network
+    # define Siamese Feature Network
     netE = SiameseFeature(base, pooling=pooling, cnn_dim=cnn_dim, cnn_pad=cnn_pad, cnn_relu_slope=cnn_relu_slope)
 
     return init_net(netE, init_type, gpu_ids)
 
 
+# define a Siamese Network
 def define_S(which_model_netS, input_nc=3, init_type='kaiming', num_classes=3, pooling='max', cnn_dim=[], cnn_pad=1,
              cnn_relu_slope=0.2, fc_dim=[], fc_relu_slope=0.2, dropout=0.5, no_cxn=False, gpu_ids=[]):
     # AC for faceaging_embedding model is a Siamese Network
@@ -194,7 +216,7 @@ def define_S(which_model_netS, input_nc=3, init_type='kaiming', num_classes=3, p
     elif 'resnet' in which_model_netS:
         base = ResNetFeature(input_nc=input_nc, which_model=which_model_netS)
     else:
-        raise NotImplementedError('Model [%s] is not implemented.' % opt.which_model)
+        raise NotImplementedError('Model [%s] is not implemented.' % which_model_netS)
 
     # define Siamese Network
     netS = SiameseNetwork(base, num_classes, pooling=pooling, cnn_dim=cnn_dim, cnn_pad=cnn_pad, cnn_relu_slope=cnn_relu_slope,

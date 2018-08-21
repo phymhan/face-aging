@@ -42,7 +42,7 @@ class FaceAgingAgeModel(BaseModel):
         if is_train:
             parser.add_argument('--lambda_L1', type=float, default=0.001, help='weight for L1 loss')
             parser.add_argument('--lambda_IP', type=float, default=0.1, help='weight for identity preserving loss')
-            parser.add_argument('--lambda_E', type=float, default=1, help='weight for encoder reconstruction loss')
+            parser.add_argument('--lambda_z', type=float, default=1, help='weight for encoder reconstruction loss')
             parser.add_argument('--lambda_A', type=float, default=1, help='weight for cycle consistency loss')
             parser.add_argument('--which_model_netIP', type=str, default='alexnet', help='model type for IP loss')
             parser.add_argument('--fineSize_IP', type=int, default=224, help='fineSize for IP')
@@ -94,6 +94,14 @@ class FaceAgingAgeModel(BaseModel):
                 self.netIP.module.load_pretrained(opt.pretrained_model_path_IP)
             else:
                 self.netIP.load_pretrained(opt.pretrained_model_path_IP)
+            # define netAR
+            self.netAR = networks.define_AC(opt.which_model_netAC, opt.input_nc, opt.init_type, opt.num_classes,
+                                            pooling=opt.pooling_AC, dropout=opt.dropout_AC, gpu_ids=self.gpu_ids)
+            if not opt.continue_train and opt.pretrained_model_path_AC:
+                if isinstance(self.netAR, torch.nn.DataParallel):
+                    self.netAR.module.load_state_dict(torch.load(opt.pretrained_model_path_AC, map_location=str(self.device)), strict=True)
+                else:
+                    self.netAR.load_state_dict(torch.load(opt.pretrained_model_path_AC, map_location=str(self.device)), strict=True)
 
         if self.isTrain:
             # TODO: use num_classes pools
@@ -122,10 +130,8 @@ class FaceAgingAgeModel(BaseModel):
             self.optimizers = []
             self.optimizer_G = torch.optim.Adam(self.netG.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
-            # self.optimizer_E = torch.optim.Adam(self.netE.parameters(), lr=opt.lr_E, betas=(opt.beta1, 0.999))
             self.optimizers.append(self.optimizer_G)
             self.optimizers.append(self.optimizer_D)
-            # self.optimizers.append(self.optimizer_E)
 
         self.embedding_mean = opt.embedding_mean
         self.embedding_std = opt.embedding_std
@@ -238,7 +244,7 @@ class FaceAgingAgeModel(BaseModel):
         # # Embedding reconstruction loss
         # pred_embedding = self.embedding_normalize(self.netE(self.transform_E(self.fake_B_E)))
         # # print('realA: %.3f, realB: %.3f, fakeB: %.3f' % (self.embedding_A[0,0,0,0], self.embedding_B[0,0,0,0], pred_embedding[0,0,0,0]))  # debug
-        # self.loss_z_rec = self.criterionRec(pred_embedding, self.embedding_B) * self.opt.lambda_E
+        # self.loss_z_rec = self.criterionRec(pred_embedding, self.embedding_B) * self.opt.lambda_z
 
         # Cycle loss
         self.loss_G_cycle = self.criterionCycle(self.rec_A, self.real_A) * self.opt.lambda_A
@@ -260,7 +266,6 @@ class FaceAgingAgeModel(BaseModel):
 
         # update G
         self.set_requires_grad(self.netD, False)
-        # self.set_requires_grad(self.netE, False)
         self.optimizer_G.zero_grad()
         self.backward_G()
         self.optimizer_G.step()
