@@ -34,14 +34,14 @@ def label_fn(a1, a2, m):
         return 2
 
 
-root = '/media/ligong/Toshiba/Datasets/SCUT-FBP/images_renamed'
+root = '../datasets/SCUT-FBP/'
 mode = opt.mode
-# src = '../data/'+mode+'_scut-fbp.txt'
+src = '../sourcefiles/scut-fbp_'+mode+'.txt'
 N = opt.N
 
-# with open(src, 'r') as f:
-#     fnames = f.readlines()
-fnames = os.listdir(root)
+with open(src, 'r') as f:
+    fnames = [fname.rstrip('\n') for fname in f.readlines()]
+# fnames = os.listdir(root)
 
 score_list = [[] for _ in range(5)]
 for name in fnames:

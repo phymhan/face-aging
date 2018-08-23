@@ -44,6 +44,7 @@ class FaceAgingAgeModel(BaseModel):
             parser.add_argument('--lambda_IP', type=float, default=0.1, help='weight for identity preserving loss')
             parser.add_argument('--lambda_AR', type=float, default=0.01, help='weight for AR loss')
             parser.add_argument('--lambda_A', type=float, default=1, help='weight for cycle consistency loss')
+            parser.add_argument('--lambda_A_GAN', type=float, default=1, help='weight for GAN loss on rec_A')
             parser.add_argument('--which_model_netIP', type=str, default='alexnet', help='model type for IP loss')
             parser.add_argument('--fineSize_IP', type=int, default=224, help='fineSize for IP')
             parser.add_argument('--pretrained_model_path_IP', type=str, default='pretrained_models/alexnet.pth', help='pretrained model path to IP net')
@@ -55,6 +56,7 @@ class FaceAgingAgeModel(BaseModel):
             parser.add_argument('--no_mixed_label_D', action='store_true', help='if True, use same label within one batch (all A < B or all A > B)')
             parser.add_argument('--weight_label_D', nargs='*', type=float, default=[0.5, 0, 0.5], help='weight for random sample label for D')
             parser.add_argument('--train_aux_on_fake', action='store_true', help='if True, train AR on fake images')
+            parser.add_argument('--detach_fake_B', action='store_true', help='if True, detach fake_B when computing rec_A')
 
         return parser
 
@@ -65,7 +67,8 @@ class FaceAgingAgeModel(BaseModel):
         self.opt.num_classes = len(opt.age_binranges)
         self.isTrain = opt.isTrain
         # specify the training losses you want to print out. The program will call base_model.get_current_losses
-        self.loss_names = ['G_GAN', 'G_IP', 'G_L1', 'G_cycle', 'z_rec', 'D_real_right', 'D_real_wrong', 'D_fake', 'AR_real', 'AR_fake']
+        self.loss_names = ['G_GAN', 'G_GAN_cycle', 'G_IP', 'G_L1', 'G_cycle', 'z_rec',
+                           'D_real_right', 'D_real_wrong', 'D_fake', 'AR_real', 'AR_fake']
         # specify the images you want to save/display. The program will call base_model.get_current_visuals
         if self.isTrain:
             self.visual_names = ['real_A', 'fake_B', 'real_B', 'rec_A']
@@ -189,7 +192,10 @@ class FaceAgingAgeModel(BaseModel):
         self.fake_B = self.netG(self.real_A, self.embedding_B)
         self.fake_B_IP = upsample2d(self.fake_B, self.opt.fineSize_IP)
         self.fake_B_E = upsample2d(self.fake_B, self.opt.fineSize_E)
-        self.rec_A = self.netG(self.fake_B, self.embedding_A)
+        if not self.opt.detach_fake_B:
+            self.rec_A = self.netG(self.fake_B, self.embedding_A)
+        else:
+            self.rec_A = self.netG(self.fake_B.detach(), self.embedding_A)
 
     def test(self):
         return
@@ -225,24 +231,40 @@ class FaceAgingAgeModel(BaseModel):
     def backward_AR(self):
         # Real
         pred = self.netE(self.transform_E(self.real_B_E))
-        self.loss_AR_real = self.criterionAR(pred, self.age_B) * self.opt.lambda_AR
+        self.loss_AR_real = self.criterionAR(pred, self.age_B)
 
         # Fake
         if self.opt.train_aux_on_fake:
             pred = self.netE(self.transform_E(self.fake_B_E.detach()))
-            self.loss_AR_fake = self.criterionAR(pred, self.age_B) * self.opt.lambda_AR
+            self.loss_AR_fake = self.criterionAR(pred, self.age_B)
         else:
             self.loss_AR_fake = 0.0
+
+        # FIXME: scaling AR losses by lambda_AR seems to have better performance
+        self.loss_AR_real = self.loss_AR_real * self.opt.lambda_AR
+        self.loss_AR_fake = self.loss_AR_fake * self.opt.lambda_AR
 
         self.loss_AR = (self.loss_AR_fake + self.loss_AR_real) * 0.5
 
         self.loss_AR.backward()
+
+        # # FIXME: for display purpose, otherwise they might be too large
+        # self.loss_AR_real = self.loss_AR_real * self.opt.lambda_AR
+        # self.loss_AR_fake = self.loss_AR_fake * self.opt.lambda_AR
 
     def backward_G(self):
         # First, G(A) should fake the discriminator
         fake_B = torch.cat((self.fake_B, expand2d(self.embedding_B, self.opt.fineSize)), 1)
         pred_fake = self.netD(fake_B)
         self.loss_G_GAN = self.criterionGAN(pred_fake, True)
+
+        # GAN on rec_A
+        if self.opt.lambda_A_GAN > 0.0:
+            fake_A = torch.cat((self.rec_A, expand2d(self.embedding_A, self.opt.fineSize)), 1)
+            pred_fake = self.netD(fake_A)
+            self.loss_G_GAN_cycle = self.criterionGAN(pred_fake, True) * self.opt.lambda_A_GAN
+        else:
+            self.loss_G_GAN_cycle = 0.0
 
         # L1: fake_B ~= real_A
         if self.opt.lambda_L1 > 0.0:
@@ -251,9 +273,12 @@ class FaceAgingAgeModel(BaseModel):
             self.loss_G_L1 = 0.0
 
         # IP loss
-        feature_A = self.netIP(self.transform_IP(self.real_A_IP)).detach()
-        feature_A.requires_grad = False
-        self.loss_G_IP = self.criterionIP(self.netIP(self.transform_IP(self.fake_B_IP)), feature_A) * self.opt.lambda_IP
+        if self.opt.lambda_IP > 0.0:
+            feature_A = self.netIP(self.transform_IP(self.real_A_IP)).detach()
+            feature_A.requires_grad = False
+            self.loss_G_IP = self.criterionIP(self.netIP(self.transform_IP(self.fake_B_IP)), feature_A) * self.opt.lambda_IP
+        else:
+            self.loss_G_IP = 0.0
 
         # AR loss
         if self.opt.lambda_AR > 0.0:
@@ -265,10 +290,13 @@ class FaceAgingAgeModel(BaseModel):
             self.loss_z_rec = 0.0
 
         # Cycle loss
-        self.loss_G_cycle = self.criterionCycle(self.rec_A, self.real_A) * self.opt.lambda_A
+        if self.opt.lambda_A > 0.0:
+            self.loss_G_cycle = self.criterionCycle(self.rec_A, self.real_A) * self.opt.lambda_A
+        else:
+            self.loss_G_cycle = 0.0
 
         # Combined loss
-        self.loss_G = self.loss_G_GAN + self.loss_G_IP + self.loss_G_L1 + self.loss_G_cycle + self.loss_z_rec
+        self.loss_G = self.loss_G_GAN + self.loss_G_IP + self.loss_G_L1 + self.loss_G_cycle + self.loss_z_rec + self.loss_G_GAN_cycle
 
         self.loss_G.backward()
 
