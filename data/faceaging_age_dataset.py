@@ -1,7 +1,7 @@
 import os.path
 from data.base_dataset import BaseDataset, get_transform
 from data.image_folder import make_dataset, make_dataset_with_filenames
-from util.util import parse_age_label, parse_age
+from util.util import get_age_label, get_age
 from PIL import Image
 import random
 import torch
@@ -41,8 +41,8 @@ class FaceAgingAgeDataset(BaseDataset):
             B_path = os.path.join(self.root, fnameB)
             imgA = Image.open(A_path).convert('RGB')
             imgB = Image.open(B_path).convert('RGB')
-            ageA = torch.Tensor([parse_age(fnameA)]).reshape(1, 1, 1)
-            ageB = torch.Tensor([parse_age(fnameB)]).reshape(1, 1, 1)
+            ageA = torch.Tensor([get_age(fnameA)]).reshape(1, 1, 1)
+            ageB = torch.Tensor([get_age(fnameB)]).reshape(1, 1, 1)
             if self.transform is not None:
                 imgA = self.transform(imgA)
                 imgB = self.transform(imgB)
@@ -62,8 +62,8 @@ class FaceAgingAgeDataset(BaseDataset):
                 B_path = os.path.join(self.root, fnameB)
                 imgA = Image.open(A_path).convert('RGB')
                 imgB = Image.open(B_path).convert('RGB')
-                ageA = torch.Tensor([parse_age(fnameA)]).reshape(1, 1, 1)
-                ageB = torch.Tensor([parse_age(fnameB)]).reshape(1, 1, 1)
+                ageA = torch.Tensor([get_age(fnameA)]).reshape(1, 1, 1)
+                ageB = torch.Tensor([get_age(fnameB)]).reshape(1, 1, 1)
                 if self.transform is not None:
                     imgA = self.transform(imgA)
                     imgB = self.transform(imgB)

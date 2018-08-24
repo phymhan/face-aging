@@ -61,20 +61,11 @@ def mkdir(path):
         os.makedirs(path)
 
 
-def parse_age(fname):
+def get_age(fname):
     # returns a float
     strlist = fname.split('_')
     age = float(strlist[0])
     return age
-
-
-def parse_age_label(fname, binranges):
-    age = parse_age(fname)
-    L = None
-    for L in range(len(binranges)-1):
-        if (age >= binranges[L]) and (age < binranges[L+1]):
-            break
-    return L
 
 
 def get_age_label(age, binranges):

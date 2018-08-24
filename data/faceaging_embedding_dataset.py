@@ -1,7 +1,7 @@
 import os.path
 from data.base_dataset import BaseDataset, get_transform
 from data.image_folder import make_dataset, make_dataset_with_filenames
-from util.util import parse_age_label
+from util.util import get_age_label
 from PIL import Image
 import random
 

@@ -8,7 +8,7 @@ import random
 import numpy as np
 from collections import OrderedDict
 
-from util.util import parse_age_label
+from util.util import get_age_label
 
 
 # TODO: set random seed
