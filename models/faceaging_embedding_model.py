@@ -6,6 +6,7 @@ from .base_model import BaseModel
 from . import networks
 import random
 import numpy as np
+import ast
 from collections import OrderedDict
 
 
@@ -37,7 +38,8 @@ class FaceAgingEmbeddingModel(BaseModel):
         parser.add_argument('--embedding_mean', type=float, nargs='*', default=[0.0], help='means of embedding')
         parser.add_argument('--embedding_std', type=float, nargs='*', default=[1.0], help='stds of embedding')
         parser.add_argument('--display_aging_visuals', action='store_true', help='display aging visuals if True')
-        parser.add_argument('--aging_visual_embedding_path', type=str, default='pretrained_models/features.npy', help='pregenerated age embeddings')
+        parser.add_argument('--aging_visual_embedding_path', type=str, default='pretrained_models/features.npy',
+                            help='pregenerated age embeddings, can be a file path or a string representation of a list')
         if is_train:
             parser.add_argument('--lambda_L1', type=float, default=0.001, help='weight for L1 loss')
             parser.add_argument('--lambda_IP', type=float, default=0.1, help='weight for identity preserving loss')
@@ -139,7 +141,7 @@ class FaceAgingEmbeddingModel(BaseModel):
         self.embedding_normalize = lambda x: (x - opt.embedding_mean[0]) / opt.embedding_std[0]
 
         if opt.display_aging_visuals and opt.aging_visual_embedding_path:
-            self.pre_generate_embeddings(opt.aging_visual_embedding_path)
+            self.pre_generate_embeddings(opt.aging_visual_embedding_path.strip())
 
         if self.isTrain:
             self.transform_IP = networks.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)).to(self.device)
@@ -156,7 +158,12 @@ class FaceAgingEmbeddingModel(BaseModel):
     def pre_generate_embeddings(self, npy_file_path):
         fixed_embeddings = []
         # embeddings should be list of 4-D tensors/arrays (or a 5-D tensor/array)
-        embeddings_npy = np.load(npy_file_path)
+        if npy_file_path[0] == '[' and npy_file_path[-1] == ']':
+            # string representation of a list
+            embeddings_npy = np.array(ast.literal_eval(npy_file_path))
+        else:
+            # loas numpy array from .npy file
+            embeddings_npy = np.load(npy_file_path)
         for L in range(embeddings_npy.shape[0]):
             fixed_embeddings.append(
                 self.embedding_normalize(torch.Tensor(embeddings_npy[L].reshape([1, 1, 1, 1])).to(self.device))
@@ -182,6 +189,9 @@ class FaceAgingEmbeddingModel(BaseModel):
         else:
             self.real_A = input['A'].to(self.device)
             self.image_paths = input['A_paths']
+            if 'B' in input:
+                self.real_B = input['B'].to(self.device)
+                self.real_B_E = upsample2d(self.real_B, self.opt.fineSize_E)
         self.current_iter += 1
         self.current_batch_size = int(self.real_A.size(0))
 
@@ -201,6 +211,11 @@ class FaceAgingEmbeddingModel(BaseModel):
             self.rec_A = self.netG(self.fake_B.detach(), self.embedding_A)
 
     def test(self):
+        if hasattr(self, 'real_B'):
+            if 'real_B' not in self.visual_names:
+                self.visual_names += ['real_B', 'fake_B']
+            self.embedding_B = self.embedding_normalize(self.netE(self.transform_E(self.real_B_E))).detach()
+            self.fake_B = self.netG(self.real_A, self.embedding_B)
         return
 
     def backward_D(self):
