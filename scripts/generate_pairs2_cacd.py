@@ -47,18 +47,18 @@ def label_fn(a1, a2, m):
 
 cnt = [0, 0, 0]
 random.shuffle(fnames)
-with open(mode+'_pairs_m10_cacd_10k.txt', 'w') as f:
+with open(mode+'_pairs_m%d_cacd_10k2.txt'%opt.margin, 'w') as f:
     for _ in range(N):
-        idx = _ % N
-        name1 = fnames[idx]
-        name2 = random.choice(fnames)
-        if random.random() < 0.5:
-            tmp = name1
-            name1 = name2
-            name2 = tmp
-        # ss = random.sample(fnames, 2)
-        # name1 = ss[0].rstrip('\n')
-        # name2 = ss[1].rstrip('\n')
+        # idx = _ % N
+        # name1 = fnames[idx]
+        # name2 = random.choice(fnames)
+        # if random.random() < 0.5:
+        #     tmp = name1
+        #     name1 = name2
+        #     name2 = tmp
+        ss = random.sample(fnames, 2)
+        name1 = ss[0].rstrip('\n')
+        name2 = ss[1].rstrip('\n')
         label = label_fn(parse_age(name1), parse_age(name2), opt.margin)
         cnt[label] += 1
         f.write('%s %s %d\n' % (name1, name2, label))

@@ -41,7 +41,7 @@ if __name__ == '__main__':
                 t = (time.time() - iter_start_time) / opt.batchSize
                 visualizer.print_current_losses(epoch, epoch_iter, losses, t, t_data)
                 if opt.display_id > 0:
-                    visualizer.plot_current_losses(epoch, epoch_iter / num_iter_per_epoch, opt, losses)
+                    visualizer.plot_current_losses(epoch - 1, epoch_iter / num_iter_per_epoch, opt, losses)
 
             if total_iter % opt.save_latest_freq == 0:
                 print('saving the latest model (epoch %d, total_iter %d)' % (epoch, total_iter))

@@ -593,6 +593,9 @@ class SiameseNetwork(nn.Module):
             nn.Conv2d(nf_prev, fc_dim[-1], kernel_size=1, stride=1, padding=0, bias=True)
         ]
         self.fc = nn.Sequential(*fc_blocks)
+        self.fc_shortcut = nn.Sequential(
+            nn.Conv2d(feature_dim, fc_dim[-1], kernel_size=1, stride=1, padding=0, bias=True)
+        )
         self.feature_dim = feature_dim
 
     def forward_once(self, x):
@@ -611,7 +614,7 @@ class SiameseNetwork(nn.Module):
         feature1 = self.forward_once(input1)
         feature2 = self.forward_once(input2)
         output = torch.cat((feature1, feature2), dim=1)
-        output = self.fc(output)
+        output = self.fc(output) + self.fc_shortcut(feature1 - feature2)
         return feature1, feature2, output
 
     def load_pretrained(self, state_dict):
